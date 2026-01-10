@@ -36,24 +36,28 @@ export default function Footer() {
     setIsMac(/macintosh|mac os x/i.test(navigator.userAgent))
   }, [])
 
-  return (
-    <footer className="mx-auto flex w-full max-w-5xl items-center justify-between">
-      <section className="flex flex-col">
-        <p className={`mt-3 flex gap-1 ${baseTextStyles}`}>
-          {t("p_146-598_Findthecodeon")}{" "}
-          <FooterLink href={GITHUB_URL}>{t("a_303-585_GitHub")}</FooterLink>
-          <FooterLink href={`${GITHUB_URL}/releases/tag/v${version}`}>v{version}</FooterLink>
-        </p>
-        <section className={`mt-1 flex items-center gap-2 ${baseTextStyles}`}>
-          {t("section_607-869_2020")}
-          {currentYear} <FooterLink href={PERSONAL_URL}>{t("a_800-850_Hamster1963")}</FooterLink>
-        </section>
-      </section>
-      <p className={`mt-1 ${baseTextStyles}`}>
-        <kbd className="pointer-events-none mx-1 inline-flex h-4 select-none items-center gap-1 rounded border bg-muted px-1.5 font-medium font-mono text-[10px] text-muted-foreground opacity-100">
-          {isMac ? <span className="text-xs">⌘</span> : "Ctrl "}K
-        </kbd>
+return (
+  <footer className="mx-auto flex w-full max-w-5xl items-center justify-between">
+    <section className="flex flex-col">
+      {/* 第一行：标题 */}
+      <p className={`mt-3 ${baseTextStyles}`}>
+        加钱道人全球监控面板
       </p>
-    </footer>
-  )
+
+      {/* 第二行：版权 + TG */}
+      <section className={`mt-1 flex items-center gap-2 ${baseTextStyles}`}>
+        © 2020-{currentYear}
+        <span>联系TG:</span>
+        <FooterLink href="https://t.me/VPS_zm">@VPSzm</FooterLink>
+      </section>
+    </section>
+
+    {/* 右侧快捷键保持不变 */}
+    <p className={`mt-1 ${baseTextStyles}`}>
+      <kbd className="pointer-events-none mx-1 inline-flex h-4 select-none items-center gap-1 rounded border bg-muted px-1.5 font-medium font-mono text-[10px] text-muted-foreground opacity-100">
+        {isMac ? <span className="text-xs">⌘</span> : "Ctrl "}K
+      </kbd>
+    </p>
+  </footer>
+)
 }
