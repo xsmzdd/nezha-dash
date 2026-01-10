@@ -41,7 +41,7 @@ return (
     <section className="flex flex-col">
       {/* 第一行：标题 */}
       <p className={`mt-3 ${baseTextStyles}`}>
-        加钱道人全球监控面板
+        加钱道人-全球监控面板
       </p>
 
       {/* 第二行：版权 + TG */}
