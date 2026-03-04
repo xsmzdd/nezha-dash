@@ -40,7 +40,8 @@
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
   --animate-shine: shine 5s linear infinite;
-  --animate-mask-left-to-right: mask-left-to-right var(--animation-duration, 0.5s) ease-in-out forwards;
+  --animate-mask-left-to-right: mask-left-to-right var(--animation-duration, 0.5s)
+    ease-in-out forwards;
 
   @keyframes accordion-down {
     from {
@@ -210,11 +211,80 @@
   html {
     @apply scroll-smooth;
   }
+
+  /* ✅ body 不再用 bg-background（避免盖住背景图） */
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background: transparent;
+
     /* font-feature-settings: "rlig" 1, "calt" 1; */
     font-synthesis-weight: none;
     text-rendering: optimizeLegibility;
+
+    position: relative;
+    min-height: 100vh;
+  }
+
+  /* ✅ 背景图：任何模式都生效，cover=铺满且不变形（会裁切边缘） */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+
+    background-image: url("/bg.jpg"); /* ✅ public/bg.jpg */
+    background-size: cover; /* ✅ 始终铺满、不变形 */
+    background-position: center;
+    background-repeat: no-repeat;
+
+    /* 更接近你截图的“柔和背景” */
+    filter: blur(10px);
+    transform: scale(1.08);
+
+    z-index: -2;
+    pointer-events: none;
+  }
+
+  /* ✅ 背景雾层：亮色=白雾，暗色=黑雾（任何主题模式生效） */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+
+    /* 亮色：白雾 */
+    background: rgba(255, 255, 255, 0.38);
+
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  .dark body::after {
+    /* 暗色：黑雾 */
+    background: rgba(0, 0, 0, 0.42);
+  }
+
+  /*
+   ✅ 不改卡片内容：只让页面/卡片半透明玻璃
+   注意：不再动 .bg-popover，所以主题切换菜单等弹层保持原样（不半透明）
+  */
+
+  /* 页面/容器底色半透明（让背景透出来） */
+  .bg-background {
+    background-color: hsl(var(--background) / 0.22) !important;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+
+  /* 卡片玻璃效果（半透明） */
+  .bg-card {
+    background-color: hsl(var(--card) / 0.58) !important;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  /* 边框淡一点，更像玻璃 */
+  .bg-card,
+  .bg-background {
+    border-color: hsl(var(--border) / 0.35) !important;
   }
 }
 
