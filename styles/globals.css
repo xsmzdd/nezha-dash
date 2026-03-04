@@ -237,7 +237,7 @@
     background-repeat: no-repeat;
 
     /* 更接近你截图的“柔和背景” */
-    filter: blur(10px);
+    filter: blur(4px);
     transform: scale(1.08);
 
     z-index: -2;
@@ -251,7 +251,7 @@
     inset: 0;
 
     /* 亮色：白雾 */
-    background: rgba(255, 255, 255, 0.38);
+    background: rgba(255, 255, 255, 0.18);
 
     z-index: -1;
     pointer-events: none;
@@ -259,7 +259,7 @@
 
   .dark body::after {
     /* 暗色：黑雾 */
-    background: rgba(0, 0, 0, 0.42);
+    background: rgba(0, 0, 0, 0.26);
   }
 
   /*
@@ -269,14 +269,14 @@
 
   /* 页面/容器底色半透明（让背景透出来） */
   .bg-background {
-    background-color: hsl(var(--background) / 0.22) !important;
+    background-color: hsl(var(--background) / 0.12) !important;
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
   }
 
   /* 卡片玻璃效果（半透明） */
   .bg-card {
-    background-color: hsl(var(--card) / 0.58) !important;
+    background-color: hsl(var(--card) / 0.36) !important;
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
   }
@@ -284,7 +284,7 @@
   /* 边框淡一点，更像玻璃 */
   .bg-card,
   .bg-background {
-    border-color: hsl(var(--border) / 0.35) !important;
+    border-color: hsl(var(--border) / 0.26) !important;
   }
 }
 
