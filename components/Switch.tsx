@@ -87,10 +87,13 @@ export default function Switch({
       ref={scrollRef}
       className="scrollbar-hidden z-50 flex flex-col items-start overflow-x-scroll rounded-[50px]"
     >
-      <div className="relative flex items-center gap-1 rounded-[50px] bg-stone-100 p-[3px] dark:bg-stone-800">
+      <div className="relative flex items-center gap-1 overflow-hidden rounded-[50px] border border-white/12 bg-white/10 p-[3px] shadow-[0_10px_30px_rgba(0,0,0,0.18)] backdrop-blur-2xl supports-[backdrop-filter]:bg-white/8">
+        <div className="pointer-events-none absolute inset-0 rounded-[50px] bg-gradient-to-b from-white/18 via-white/8 to-transparent" />
+        <div className="pointer-events-none absolute inset-0 rounded-[50px] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(255,255,255,0.05)]" />
+
         {indicator && (
           <div
-            className="absolute top-[3px] left-0 z-10 h-[35px] bg-white shadow-black/5 shadow-lg dark:bg-stone-700 dark:shadow-white/5"
+            className="absolute top-[3px] left-0 z-10 h-[35px] border border-[#F7C35A]/70 bg-[#F3A402]/88 shadow-[0_8px_22px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.32)] backdrop-blur-md"
             style={{
               borderRadius: 24,
               width: `${indicator.w}px`,
@@ -99,32 +102,43 @@ export default function Switch({
             }}
           />
         )}
-        {allTag.map((tag, index) => (
-          <div
-            key={tag}
-            ref={tagRefs.current[index]}
-            onClick={() => {
-              onTagChange(tag)
-              sessionStorage.setItem("selectedTag", tag)
-            }}
-            className={cn(
-              "relative cursor-pointer rounded-3xl px-2.5 py-[8px] font-semibold text-[13px]",
-              "text-stone-400 transition-all duration-500 ease-in-out hover:text-stone-950 dark:text-stone-500 hover:dark:text-stone-50",
-              {
-                "text-stone-950 dark:text-stone-50": nowTag === tag,
-              },
-            )}
-          >
-            <div className="relative z-20 flex items-center gap-1">
-              <div className="flex items-center gap-2 whitespace-nowrap">
-                {tag === "defaultTag" ? t("defaultTag") : tag}{" "}
-                {getEnv("NEXT_PUBLIC_ShowTagCount") === "true" && tag !== "defaultTag" && (
-                  <div className="w-fit rounded-full bg-muted px-1.5">{tagCountMap[tag]}</div>
-                )}
+
+        {allTag.map((tag, index) => {
+          const isActive = nowTag === tag
+
+          return (
+            <div
+              key={tag}
+              ref={tagRefs.current[index]}
+              onClick={() => {
+                onTagChange(tag)
+                sessionStorage.setItem("selectedTag", tag)
+              }}
+              className={cn(
+                "relative cursor-pointer rounded-3xl px-2.5 py-[8px] font-semibold text-[13px] transition-all duration-500 ease-in-out",
+                isActive ? "text-[#6E4900]" : "text-white/82 hover:text-white",
+              )}
+            >
+              <div className="relative z-20 flex items-center gap-1">
+                <div className="flex items-center gap-2 whitespace-nowrap">
+                  {tag === "defaultTag" ? t("defaultTag") : tag}
+                  {getEnv("NEXT_PUBLIC_ShowTagCount") === "true" && tag !== "defaultTag" && (
+                    <div
+                      className={cn(
+                        "w-fit rounded-full px-1.5 text-[12px] transition-all",
+                        isActive
+                          ? "bg-[#6E4900]/10 text-[#6E4900]"
+                          : "bg-white/12 text-white/88",
+                      )}
+                    >
+                      {tagCountMap[tag]}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
