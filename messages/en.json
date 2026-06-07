@@ -1,0 +1,170 @@
+{
+  "ServerOverviewClient": {
+    "p_816-881_Totalservers": "Total servers",
+    "p_1610-1676_Onlineservers": "Online servers",
+    "p_2532-2599_Offlineservers": "Offline servers",
+    "p_3463-3530_Totalbandwidth": "Total bandwidth",
+    "speed": "speed",
+    "network": "Network",
+    "error_message": "Please check your environment variables and review the server console",
+    "no_data_message": "No data",
+    "realtimeNetwork": "Realtime network"
+  },
+  "ServerListClient": {
+    "error_message": "Please check your environment variables and review the server console",
+    "defaultTag": "All",
+    "connecting": "Connecting"
+  },
+  "ServerCard": {
+    "System": "System",
+    "CPU": "CPU",
+    "Mem": "Mem",
+    "STG": "STG",
+    "Upload": "Upload",
+    "Download": "Download",
+    "Offline": "Offline",
+    "Uptime": "Uptime",
+    "TotalUpload": "Upload",
+    "TotalDownload": "Download",
+    "Region": "Region",
+    "NetSpeed": "Net Spd",
+    "Traffic": "Traffic",
+    "Latency": "Latency",
+    "Loss": "Loss",
+    "Monthly": "Free/Monthly",
+    "LongTerm": "Long term",
+    "Online": "Online"
+  },
+  "TabSwitch": {
+    "Detail": "Detail",
+    "Network": "Network",
+    "disabled_tooltip": "This feature is not available in current mode"
+  },
+  "SignIn": {
+    "SignInMessage": "Please enter the password",
+    "Submit": "Login",
+    "ErrorMessage": "Invalid password",
+    "SuccessMessage": "Login successful"
+  },
+  "ServerCardPopover": {
+    "System": "System",
+    "CPU": "CPU",
+    "Mem": "Mem",
+    "STG": "STG",
+    "Swap": "Swap",
+    "Network": "Network",
+    "Load": "Load",
+    "Online": "Online",
+    "Offline": "Offline",
+    "Uptime": "Uptime",
+    "Upload": "Upload",
+    "Download": "Download",
+    "Region": "Region"
+  },
+  "NetworkChartClient": {
+    "avg_delay": "Latency",
+    "packet_loss": "Packet Loss",
+    "chart_fetch_error_message": "Failed to fetch network data, please check if the server monitoring is enabled"
+  },
+  "IPInfo": {
+    "analysing": "Analysing IP info...",
+    "asn_number": "Origin ASN",
+    "registered_country": "Registered Country",
+    "time_zone": "Time Zone",
+    "postal_code": "Postal Code",
+    "city": "City",
+    "longitude": "Longitude",
+    "latitude": "Latitude"
+  },
+  "NetworkChart": {
+    "avg_delay": "Latency",
+    "packet_loss": "Packet Loss",
+    "ServerMonitorCount": "Services",
+    "peak_cut": "Peak Cut"
+  },
+  "ServerDetailClient": {
+    "detail_fetch_error_message": "Please check your environment variables and review the server console",
+    "status": "Status",
+    "Online": "Online",
+    "Offline": "Offline",
+    "Uptime": "Uptime",
+    "Days": "Days",
+    "Hours": "Hours",
+    "Version": "Version",
+    "Arch": "Arch",
+    "Mem": "Mem",
+    "Disk": "Disk",
+    "Region": "Region",
+    "System": "System",
+    "CPU": "CPU",
+    "Upload": "Upload",
+    "Download": "Download",
+    "Load": "Load",
+    "LastActive": "Last Active",
+    "BootTime": "Boot Time"
+  },
+  "ServerDetailChartClient": {
+    "chart_fetch_error_message": "Please check your environment variables and review the server console",
+    "Process": "Process",
+    "Disk": "Disk",
+    "Mem": "Mem",
+    "Swap": "Swap",
+    "Upload": "Upload",
+    "Download": "Download"
+  },
+  "ThemeSwitcher": {
+    "Light": "Light",
+    "Dark": "Dark",
+    "System": "System"
+  },
+  "Footer": {
+    "p_146-598_Findthecodeon": "Find the code on",
+    "a_303-585_GitHub": "GitHub",
+    "section_607-869_2020": "© 2020-",
+    "a_800-850_Hamster1963": "@Hamster1963"
+  },
+  "Header": {
+    "p_1079-1199_Simpleandbeautifuldashbo": "Simple and beautiful dashboard"
+  },
+  "Overview": {
+    "p_2277-2331_Overview": "Overview",
+    "p_2390-2457_wherethetimeis": "where the time is"
+  },
+  "Global": {
+    "Loading": "Loading...",
+    "Distributions": "Servers are distributed in",
+    "Regions": "Regions",
+    "Servers": "servers"
+  },
+  "NotFoundPage": {
+    "h1_490-590_404NotFound": "Server Not Found",
+    "h1_490-590_404NotFoundBack": " Press here to go back",
+    "h1_490-590_Error": "Something went wrong"
+  },
+  "NetworkPage": {
+    "title": "Network Latency Charts",
+    "description": "View and compare network latency charts across different servers"
+  },
+  "AggregatedNetworkCharts": {
+    "loading": "Loading...",
+    "no_online_servers": "No online servers available",
+    "server_selection": "Server Selection",
+    "select_servers_to_display": "Select which servers to display network latency charts for",
+    "no_servers_selected": "No servers selected. Please select at least one server to display charts.",
+    "multi_select_mode": "Multi-select",
+    "single_select_mode": "Single-select",
+    "select_servers_multi": "Select multiple servers to compare",
+    "select_server_single": "Select one server to monitor"
+  },
+  "DashCommand": {
+    "TypeCommand": "Type a command or search...",
+    "NoResults": "No results found.",
+    "Servers": "Servers",
+    "Shortcuts": "Shortcuts",
+    "ToggleLightMode": "Toggle Light Mode",
+    "ToggleDarkMode": "Toggle Dark Mode",
+    "ToggleSystemMode": "Toggle System Mode",
+    "Home": "Home",
+    "NetworkCharts": "Network Charts"
+  }
+}

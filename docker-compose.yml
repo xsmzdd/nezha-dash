@@ -1,0 +1,11 @@
+services:
+  nezha-dash:
+    container_name: nezha-dash
+    build: .
+    image: xsmzdd/nezha-dash:local
+    volumes:
+      - ./.env:/app/.env
+      - ./public/bg.jpg:/app/public/bg.jpg
+    restart: always
+    ports:
+      - "4123:3000"

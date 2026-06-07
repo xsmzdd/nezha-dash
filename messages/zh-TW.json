@@ -1,0 +1,169 @@
+{
+  "ServerOverviewClient": {
+    "p_816-881_Totalservers": "伺服器總數",
+    "p_1610-1676_Onlineservers": "在線伺服器",
+    "p_2532-2599_Offlineservers": "離線伺服器",
+    "p_3463-3530_Totalbandwidth": "總流量",
+    "speed": "速率",
+    "network": "網路",
+    "error_message": "請檢查您的環境變數並檢查伺服器控制台",
+    "no_data_message": "無資料",
+    "realtimeNetwork": "即時網路"
+  },
+  "ServerListClient": {
+    "error_message": "請檢查您的環境變數並檢查伺服器控制台",
+    "defaultTag": "全部",
+    "connecting": "連接中"
+  },
+  "ServerCard": {
+    "System": "系統",
+    "CPU": "CPU",
+    "Mem": "記憶體",
+    "STG": "儲存",
+    "Upload": "上傳",
+    "Download": "下載",
+    "Offline": "離線",
+    "Uptime": "稼働時間",
+    "TotalUpload": "总上傳",
+    "TotalDownload": "总下載",
+    "Region": "地區",
+    "NetSpeed": "網路速率",
+    "Traffic": "流量",
+    "Latency": "延遲",
+    "Loss": "丟包",
+    "Monthly": "月付/免費",
+    "LongTerm": "長期",
+    "Online": "在線"
+  },
+  "TabSwitch": {
+    "Detail": "詳細",
+    "Network": "網路"
+  },
+  "SignIn": {
+    "SignInMessage": "請輸入密碼",
+    "Submit": "登入",
+    "ErrorMessage": "密碼錯誤",
+    "SuccessMessage": "登入成功"
+  },
+  "ServerCardPopover": {
+    "System": "系統",
+    "CPU": "CPU",
+    "Mem": "記憶體",
+    "STG": "儲存",
+    "Swap": "虛擬記憶體",
+    "Network": "網路",
+    "Load": "負載",
+    "Online": "在線時間",
+    "Offline": "離線",
+    "Uptime": "稼働時間",
+    "Upload": "上傳",
+    "Download": "下載",
+    "Region": "地域"
+  },
+  "NetworkChartClient": {
+    "avg_delay": "延遲",
+    "packet_loss": "封包遺失率",
+    "chart_fetch_error_message": "獲取網絡數據失敗，請檢查是否開啟服務端監控"
+  },
+  "IPInfo": {
+    "analysing": "正在分析 IP 資訊...",
+    "asn_number": "ASN Number",
+    "registered_country": "注册地區",
+    "time_zone": "時區",
+    "postal_code": "郵遞區號",
+    "city": "城市",
+    "longitude": "經度",
+    "latitude": "緯度"
+  },
+  "NetworkChart": {
+    "avg_delay": "延遲",
+    "packet_loss": "封包遺失率",
+    "ServerMonitorCount": "個監測服務",
+    "peak_cut": "削峰"
+  },
+  "ServerDetailClient": {
+    "detail_fetch_error_message": "獲取伺服器詳情失敗,請檢查您的環境變數並檢查伺服器控制台",
+    "status": "狀態",
+    "Online": "在線",
+    "Offline": "離線",
+    "Uptime": "稼働時間",
+    "Days": "天",
+    "Hours": "小時",
+    "Version": "版本",
+    "Arch": "架構",
+    "Mem": "記憶體",
+    "Disk": "磁碟",
+    "Region": "地區",
+    "System": "系統",
+    "CPU": "CPU",
+    "Upload": "上傳",
+    "Download": "下載",
+    "Load": "負載",
+    "LastActive": "最後上報時間",
+    "BootTime": "啟動時間"
+  },
+  "ServerDetailChartClient": {
+    "chart_fetch_error_message": "獲取伺服器詳情失敗,請檢查您的環境變數並檢查伺服器控制台",
+    "Process": "進程",
+    "Disk": "磁碟",
+    "Mem": "記憶體",
+    "Swap": "虛擬記憶體",
+    "Upload": "上傳",
+    "Download": "下載"
+  },
+  "ThemeSwitcher": {
+    "Light": "亮色",
+    "Dark": "暗色",
+    "System": "系統"
+  },
+  "Footer": {
+    "p_146-598_Findthecodeon": "程式碼開源",
+    "a_303-585_GitHub": "GitHub",
+    "section_607-869_2020": "© 2020-",
+    "a_800-850_Hamster1963": "@Hamster1963"
+  },
+  "Header": {
+    "p_1079-1199_Simpleandbeautifuldashbo": "簡單美觀的儀錶板"
+  },
+  "Overview": {
+    "p_2277-2331_Overview": "概覽",
+    "p_2390-2457_wherethetimeis": "當前時間"
+  },
+  "Global": {
+    "Loading": "載入中...",
+    "Distributions": "伺服器分佈在",
+    "Regions": "個地區",
+    "Servers": "個伺服器"
+  },
+  "NotFoundPage": {
+    "h1_490-590_404NotFound": "伺服器未找到",
+    "h1_490-590_404NotFoundBack": "返回",
+    "h1_490-590_Error": "發生錯誤"
+  },
+  "NetworkPage": {
+    "title": "網絡延遲圖表",
+    "description": "查看和比較不同伺服器的網絡延遲圖表"
+  },
+  "AggregatedNetworkCharts": {
+    "loading": "加載中...",
+    "no_online_servers": "沒有在線伺服器",
+    "server_selection": "伺服器選擇",
+    "select_servers_to_display": "選擇要顯示網絡延遲圖表的伺服器",
+    "no_servers_selected": "未選擇伺服器。請至少選擇一個伺服器來顯示圖表。",
+    "multi_select_mode": "多選模式",
+    "single_select_mode": "單選模式",
+    "select_servers_multi": "選擇多個伺服器進行比較",
+    "select_server_single": "選擇一個伺服器進行監控"
+  },
+  "DashCommand": {
+    "TypeCommand": "輸入命令或搜尋",
+    "NoResults": "沒有結果",
+    "Servers": "伺服器",
+    "Shortcuts": "快捷鍵",
+    "ToggleLightMode": "切換亮色模式",
+    "ToggleDarkMode": "切換暗色模式",
+    "ToggleSystemMode": "切換系統模式",
+    "Home": "首頁",
+    "NetworkCharts": "網絡圖表"
+  }
+}

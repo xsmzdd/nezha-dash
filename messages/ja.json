@@ -1,0 +1,169 @@
+{
+  "ServerOverviewClient": {
+    "p_816-881_Totalservers": "サーバーの総数",
+    "p_1610-1676_Onlineservers": "オンラインサーバー",
+    "p_2532-2599_Offlineservers": "オフラインサーバー",
+    "p_3463-3530_Totalbandwidth": "総流量",
+    "speed": "速度",
+    "network": "ネットワーク",
+    "error_message": "環境変数を確認し、サーバーコンソールを確認してください",
+    "no_data_message": "データなし",
+    "realtimeNetwork": "リアルタイム通信"
+  },
+  "ServerListClient": {
+    "error_message": "環境変数を確認し、サーバーコンソールを確認してください",
+    "defaultTag": "すべて",
+    "connecting": "接続中"
+  },
+  "ServerCard": {
+    "System": "システム",
+    "CPU": "CPU",
+    "Mem": "Mem",
+    "STG": "STG",
+    "Upload": "Upload",
+    "Download": "Download",
+    "Offline": "Offline",
+    "Uptime": "Uptime",
+    "TotalUpload": "Upload",
+    "TotalDownload": "Download",
+    "Region": "Region",
+    "NetSpeed": "ネット速度",
+    "Traffic": "通信量",
+    "Latency": "遅延",
+    "Loss": "損失",
+    "Monthly": "無料/月額",
+    "LongTerm": "長期",
+    "Online": "オンライン"
+  },
+  "TabSwitch": {
+    "Detail": "詳細",
+    "Network": "ネットワーク"
+  },
+  "SignIn": {
+    "SignInMessage": "パスワードを入力してください",
+    "Submit": "ログイン",
+    "ErrorMessage": "パスワードが間違っています",
+    "SuccessMessage": "ログイン成功"
+  },
+  "ServerCardPopover": {
+    "System": "システム",
+    "CPU": "CPU",
+    "Mem": "メモリ",
+    "STG": "ストレージ",
+    "Swap": "スワップ",
+    "Network": "ネットワーク",
+    "Load": "負荷",
+    "Online": "オンライン時間",
+    "Offline": "オフライン",
+    "Uptime": "アップタイム",
+    "Upload": "アップロード",
+    "Download": "ダウンロード",
+    "Region": "地域"
+  },
+  "NetworkChartClient": {
+    "avg_delay": "遅延",
+    "packet_loss": "パケットロス率",
+    "chart_fetch_error_message": "ネットワークデータの取得に失敗しました。サーバーの監視が有効になっているかどうかを確認してください"
+  },
+  "IPInfo": {
+    "analysing": "IP情報を分析中...",
+    "asn_number": "ASN",
+    "registered_country": "Registered Country",
+    "time_zone": "時刻",
+    "postal_code": "郵便番号",
+    "city": "都市",
+    "longitude": "経度",
+    "latitude": "緯度"
+  },
+  "NetworkChart": {
+    "avg_delay": "遅延",
+    "packet_loss": "パケットロス率",
+    "ServerMonitorCount": "サービス",
+    "peak_cut": "ピークカット"
+  },
+  "ServerDetailClient": {
+    "detail_fetch_error_message": "環境変数を確認し、サーバーコンソールを確認してください",
+    "status": "ステータス",
+    "Online": "オンライン",
+    "Offline": "オフライン",
+    "Uptime": "稼働時間",
+    "Days": "日",
+    "Hours": "時間",
+    "Version": "バージョン",
+    "Arch": "アーキテクチャ",
+    "Mem": "メモリ",
+    "Disk": "ディスク",
+    "Region": "地域",
+    "System": "システム",
+    "CPU": "CPU",
+    "Load": "負荷",
+    "Upload": "Upload",
+    "Download": "Download",
+    "LastActive": "Last Active",
+    "BootTime": "Boot Time"
+  },
+  "ServerDetailChartClient": {
+    "chart_fetch_error_message": "環境変数を確認し、サーバーコンソールを確認してください",
+    "Process": "進捗状況",
+    "Disk": "ディスク",
+    "Mem": "メモリ",
+    "Swap": "スワップ",
+    "Upload": "アップロード",
+    "Download": "ダウンロード"
+  },
+  "ThemeSwitcher": {
+    "Light": "ライト",
+    "Dark": "ダーク",
+    "System": "システム"
+  },
+  "Footer": {
+    "p_146-598_Findthecodeon": "コードのオープンソース",
+    "a_303-585_GitHub": "GitHub",
+    "section_607-869_2020": "© 2020〜",
+    "a_800-850_Hamster1963": "@Hamster1963"
+  },
+  "Header": {
+    "p_1079-1199_Simpleandbeautifuldashbo": "シンプルで美しいダッシュボード"
+  },
+  "Overview": {
+    "p_2277-2331_Overview": "概要",
+    "p_2390-2457_wherethetimeis": "現在の時間"
+  },
+  "Global": {
+    "Loading": "Loading...",
+    "Distributions": "サーバーは",
+    "Regions": "つの地域に分散されています",
+    "Servers": "サーバー"
+  },
+  "NotFoundPage": {
+    "h1_490-590_404NotFound": "サーバーは見つかりません",
+    "h1_490-590_404NotFoundBack": "戻る",
+    "h1_490-590_Error": "何らかの問題が発生しました"
+  },
+  "NetworkPage": {
+    "title": "ネットワーク遅延グラフ",
+    "description": "異なるサーバーのネットワーク遅延グラフを表示・比較します"
+  },
+  "AggregatedNetworkCharts": {
+    "loading": "読み込み中...",
+    "no_online_servers": "オンラインサーバーがありません",
+    "server_selection": "サーバー選択",
+    "select_servers_to_display": "ネットワーク遅延グラフを表示するサーバーを選択してください",
+    "no_servers_selected": "サーバーが選択されていません。グラフを表示するには少なくとも1つのサーバーを選択してください。",
+    "multi_select_mode": "複数選択",
+    "single_select_mode": "単一選択",
+    "select_servers_multi": "比較する複数のサーバーを選択",
+    "select_server_single": "監視する1つのサーバーを選択"
+  },
+  "DashCommand": {
+    "TypeCommand": "コマンドを入力してください",
+    "NoResults": "結果は見つかりませんでした",
+    "Servers": "サーバー",
+    "Shortcuts": "ショートカット",
+    "ToggleLightMode": "ライトモードに切り替え",
+    "ToggleDarkMode": "ダークモードに切り替え",
+    "ToggleSystemMode": "システムモードに切り替え",
+    "Home": "ホーム",
+    "NetworkCharts": "ネットワークグラフ"
+  }
+}
