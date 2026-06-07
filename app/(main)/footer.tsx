@@ -5,9 +5,9 @@ import { useEffect, useState } from "react"
 /* =======================
    链接配置（统一管理）
 ======================= */
-const TG_URL = "https://t.me/VPS_zm"
-const QQ_URL = "https://qm.qq.com/cgi-bin/qm/qr?k=413959134" // ← 你可替换
-const SITE_URL = "https://xn--gmqv8g4v8e0wd.top" // ← 你可替换
+const TG_URL = ""
+const QQ_URL = "" // ← 你可替换
+const SITE_URL = "" // ← 你可替换
 
 /* =======================
    通用样式
