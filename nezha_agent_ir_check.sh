@@ -1,38 +1,42 @@
 #!/usr/bin/env bash
-# Nezha Agent Linux 入侵痕迹检测脚本
-# 只读检测：不会停止服务、删除文件、修改配置或联网。
-# 适用：Debian/Ubuntu、RHEL/CentOS/Rocky/Alma、Alpine 等常见 Linux。
+# Nezha Agent 远程命令执行取证脚本
+# 只读：不会停止服务、删除文件、修改配置或安装软件。
+# 重点：尝试还原由 nezha-agent 直接派生的 `sh -c <命令>`、后续子进程、文件操作与上传痕迹。
 
 set -uo pipefail
 export LC_ALL=C
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-VERSION="1.0.0"
+VERSION="2.0.1"
 DAYS=30
-MAX_ITEMS=120
+MAX_ITEMS=200
 NO_COLOR=0
+OUTPUT_FILE=""
+DEEP_SCAN=0
 
 usage() {
-  cat <<'USAGE'
+  cat <<'EOF'
 用法：
-  sudo bash nezha_agent_ir_check.sh [选项]
+  sudo bash nezha_agent_rce_forensics.sh [选项]
 
 选项：
   -d, --days N       检查最近 N 天，默认 30
-  -m, --max N        每一类最多显示 N 条，默认 120
+  -m, --max N        每类最多显示 N 条，默认 200
+  -o, --output FILE  同时保存完整检查结果
+      --deep-scan    扫描整个本地根文件系统的近期可疑文件（可能较慢）
       --no-color     禁用彩色输出
   -h, --help         显示帮助
 
 示例：
-  sudo bash nezha_agent_ir_check.sh
-  sudo bash nezha_agent_ir_check.sh --days 7
-  sudo bash nezha_agent_ir_check.sh -d 90 -m 300
+  sudo bash nezha_agent_rce_forensics.sh
+  sudo bash nezha_agent_rce_forensics.sh --days 7 --output /root/nezha-rce-check.log
+  sudo bash nezha_agent_rce_forensics.sh --days 90 --deep-scan
 
 退出码：
-  0  未发现明显入侵迹象
-  1  发现高置信或可疑入侵迹象
-  2  参数错误、权限不足或运行失败
-USAGE
+  0  未发现明确或高风险痕迹
+  1  发现已确认命令执行或高风险痕迹
+  2  参数/权限/运行错误
+EOF
 }
 
 while (($#)); do
@@ -43,6 +47,11 @@ while (($#)); do
     -m|--max)
       [[ $# -ge 2 ]] || { echo "缺少 --max 参数" >&2; exit 2; }
       MAX_ITEMS="$2"; shift 2 ;;
+    -o|--output)
+      [[ $# -ge 2 ]] || { echo "缺少 --output 参数" >&2; exit 2; }
+      OUTPUT_FILE="$2"; shift 2 ;;
+    --deep-scan)
+      DEEP_SCAN=1; shift ;;
     --no-color)
       NO_COLOR=1; shift ;;
     -h|--help)
@@ -57,81 +66,80 @@ done
 [[ "$DAYS" =~ ^[0-9]+$ ]] && ((DAYS >= 1 && DAYS <= 3650)) || {
   echo "--days 必须是 1-3650 的整数" >&2; exit 2;
 }
-[[ "$MAX_ITEMS" =~ ^[0-9]+$ ]] && ((MAX_ITEMS >= 10 && MAX_ITEMS <= 5000)) || {
-  echo "--max 必须是 10-5000 的整数" >&2; exit 2;
+[[ "$MAX_ITEMS" =~ ^[0-9]+$ ]] && ((MAX_ITEMS >= 10 && MAX_ITEMS <= 10000)) || {
+  echo "--max 必须是 10-10000 的整数" >&2; exit 2;
 }
 
 if ((EUID != 0)); then
-  echo "本脚本需要 root 权限读取审计日志、SSH 密钥和所有用户目录。"
+  echo "需要 root 权限读取 journald、audit、SSH 密钥及所有用户目录。"
   echo "请使用：sudo bash $0 --days $DAYS"
   exit 2
 fi
 
-if [[ -t 1 && "$NO_COLOR" -eq 0 ]]; then
-  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'
-  C_GREEN=$'\033[32m'; C_BLUE=$'\033[34m'; C_MAGENTA=$'\033[35m'; C_CYAN=$'\033[36m'
-else
-  C_RESET=""; C_BOLD=""; C_RED=""; C_YELLOW=""; C_GREEN=""; C_BLUE=""; C_MAGENTA=""; C_CYAN=""
+if [[ -n "$OUTPUT_FILE" ]]; then
+  mkdir -p -- "$(dirname -- "$OUTPUT_FILE")" 2>/dev/null || {
+    echo "无法创建输出目录：$(dirname -- "$OUTPUT_FILE")" >&2; exit 2;
+  }
+  touch -- "$OUTPUT_FILE" 2>/dev/null || {
+    echo "无法写入输出文件：$OUTPUT_FILE" >&2; exit 2;
+  }
+  exec > >(tee -a "$OUTPUT_FILE") 2>&1
 fi
 
-TMP_ROOT="$(mktemp -d /tmp/nezha-ir.XXXXXX)" || exit 2
-trap 'rm -rf -- "$TMP_ROOT"' EXIT INT TERM
+if [[ -t 1 && "$NO_COLOR" -eq 0 ]]; then
+  C0=$'\033[0m'; B=$'\033[1m'; RED=$'\033[31m'; YEL=$'\033[33m'
+  GRN=$'\033[32m'; BLU=$'\033[34m'; MAG=$'\033[35m'; CYN=$'\033[36m'
+else
+  C0=""; B=""; RED=""; YEL=""; GRN=""; BLU=""; MAG=""; CYN=""
+fi
 
-START_DATE="$(date -d "$DAYS days ago" '+%Y-%m-%d 00:00:00' 2>/dev/null || date '+%Y-%m-%d 00:00:00')"
-NOW="$(date '+%Y-%m-%d %H:%M:%S %z')"
+TMP="$(mktemp -d /tmp/nezha-rce-ir.XXXXXX)" || exit 2
+trap 'rm -rf -- "$TMP"' EXIT INT TERM
 
-CRITICAL=0
+NOW_EPOCH="$(date +%s)"
+START_EPOCH="$(date -d "$DAYS days ago" +%s 2>/dev/null || echo 0)"
+START_TEXT="$(date -d "@$START_EPOCH" '+%Y-%m-%d %H:%M:%S %z' 2>/dev/null || echo unknown)"
+NOW_TEXT="$(date '+%Y-%m-%d %H:%M:%S %z')"
+
+CONFIRMED=0
+HIGH=0
 SUSPICIOUS=0
-HARDENING=0
-INFO_COUNT=0
+RISK=0
+INFO=0
 ERRORS=0
+VISIBILITY_GAPS=0
+AUDIT_DIRECT=0
+AUDIT_CHILD=0
+AUDIT_FILEOPS=0
+LIVE_CHILDREN=0
+MCP_TEMP_COUNT=0
+RECENT_SUSP_FILES=0
+PERSIST_COUNT=0
+ACCOUNT_COUNT=0
+KEY_COUNT=0
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-describe_file() {
-  local f="$1"
-  have file && file -L -- "$f" 2>/dev/null || true
-}
-
-hash_file() {
-  local f="$1"
-  if have sha256sum; then
-    sha256sum -- "$f" 2>/dev/null || true
-  elif have shasum; then
-    shasum -a 256 -- "$f" 2>/dev/null || true
-  fi
-}
-
-section() {
-  printf '\n%s%s== %s ==%s\n' "$C_BOLD" "$C_BLUE" "$1" "$C_RESET"
-}
-
-subsection() {
-  printf '\n%s-- %s --%s\n' "$C_CYAN" "$1" "$C_RESET"
-}
+section() { printf '\n%s%s== %s ==%s\n' "$B" "$BLU" "$1" "$C0"; }
+subsection() { printf '\n%s-- %s --%s\n' "$CYN" "$1" "$C0"; }
 
 finding() {
   local sev="$1"; shift
-  local msg="$*"
   case "$sev" in
-    CRITICAL)
-      ((CRITICAL++)); printf '%s[严重]%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$msg" ;;
-    SUSPICIOUS)
-      ((SUSPICIOUS++)); printf '%s[可疑]%s %s\n' "$C_MAGENTA$C_BOLD" "$C_RESET" "$msg" ;;
-    HARDENING)
-      ((HARDENING++)); printf '%s[风险]%s %s\n' "$C_YELLOW" "$C_RESET" "$msg" ;;
-    INFO)
-      ((INFO_COUNT++)); printf '%s[信息]%s %s\n' "$C_GREEN" "$C_RESET" "$msg" ;;
-    ERROR)
-      ((ERRORS++)); printf '%s[检测失败]%s %s\n' "$C_RED" "$C_RESET" "$msg" ;;
+    CONFIRMED) ((CONFIRMED++)); printf '%s[已确认]%s %s\n' "$B$RED" "$C0" "$*" ;;
+    HIGH)      ((HIGH++));      printf '%s[高危]%s %s\n' "$B$RED" "$C0" "$*" ;;
+    SUSPICIOUS)((SUSPICIOUS++));printf '%s[可疑]%s %s\n' "$B$MAG" "$C0" "$*" ;;
+    RISK)      ((RISK++));      printf '%s[风险]%s %s\n' "$YEL" "$C0" "$*" ;;
+    INFO)      ((INFO++));      printf '%s[信息]%s %s\n' "$GRN" "$C0" "$*" ;;
+    GAP)       ((VISIBILITY_GAPS++)); printf '%s[取证缺口]%s %s\n' "$YEL" "$C0" "$*" ;;
+    ERROR)     ((ERRORS++));    printf '%s[检测失败]%s %s\n' "$RED" "$C0" "$*" ;;
   esac
 }
 
-print_limited_file() {
-  local file="$1" max="${2:-$MAX_ITEMS}"
+print_limited() {
+  local file="$1" max="${2:-$MAX_ITEMS}" count
   [[ -s "$file" ]] || return 1
   sed -n "1,${max}p" "$file"
-  local count
   count="$(wc -l < "$file" 2>/dev/null || echo 0)"
   if [[ "$count" =~ ^[0-9]+$ ]] && ((count > max)); then
     echo "... 已截断，共 $count 条；可用 --max 增大显示上限"
@@ -139,747 +147,790 @@ print_limited_file() {
 }
 
 stat_line() {
-  local f="$1"
-  stat -Lc '%A %a %U:%G size=%s mtime=%y ctime=%z path=%n' -- "$f" 2>/dev/null || \
-    stat -c '%A %a %U:%G size=%s mtime=%y ctime=%z path=%n' -- "$f" 2>/dev/null || true
+  stat -Lc 'mode=%A(%a) owner=%U:%G size=%s mtime=%y ctime=%z path=%n' -- "$1" 2>/dev/null || \
+  stat -c  'mode=%A(%a) owner=%U:%G size=%s mtime=%y ctime=%z path=%n' -- "$1" 2>/dev/null || true
 }
 
-is_recent_file() {
-  local f="$1"
-  find "$f" -maxdepth 0 -newermt "$START_DATE" -print -quit 2>/dev/null | grep -q .
+sha256_file() {
+  if have sha256sum; then sha256sum -- "$1" 2>/dev/null || true
+  elif have shasum; then shasum -a 256 -- "$1" 2>/dev/null || true
+  fi
 }
 
-redact_config() {
+redact_secret_text() {
   sed -E \
-    -e 's/^([[:space:]]*(client_secret|agent_secret|agent_secret_key|token|password|passwd|secret)[[:space:]]*:[[:space:]]*).*/\1<REDACTED>/I' \
-    -e 's/(NZ_CLIENT_SECRET=)[^[:space:]"]+/\1<REDACTED>/Ig' \
-    "$1" 2>/dev/null
+    -e 's/([[:space:]]-p[[:space:]]+)[^[:space:];]+/\1<REDACTED>/g' \
+    -e 's/(--password[=[:space:]]+)[^[:space:];]+/\1<REDACTED>/Ig' \
+    -e 's/(--token[=[:space:]]+)[^[:space:];]+/\1<REDACTED>/Ig' \
+    -e 's/(client_secret[[:space:]]*:[[:space:]]*).*/\1<REDACTED>/Ig' \
+    -e 's/(agent_secret[[:space:]]*:[[:space:]]*).*/\1<REDACTED>/Ig'
 }
 
-key_value_yaml() {
-  local key="$1" file="$2"
-  awk -v k="$key" '
-    BEGIN{IGNORECASE=1}
-    $0 !~ /^[[:space:]]*#/ {
-      line=$0
-      sub(/[[:space:]]+#.*/, "", line)
-      if (line ~ "^[[:space:]]*" k "[[:space:]]*:") {
-        sub("^[[:space:]]*" k "[[:space:]]*:[[:space:]]*", "", line)
-        gsub(/^["]|["]$/, "", line)
-        print line; exit
-      }
-    }' "$file" 2>/dev/null
+is_suspicious_text() {
+  grep -Eqi '(^|[ /])(xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|watchbog|watchdogd|dpkgd|masscan|zmap|socat|chisel|frpc|gost|realm)([ /]|$)|stratum(\+tcp)?://|/dev/shm|/var/tmp/\.|/tmp/\.|curl[^|;]*(\||;)[[:space:]]*(ba)?sh|wget[^|;]*(\||;)[[:space:]]*(ba)?sh|base64[[:space:]]+(-d|--decode)|python[^;]*(socket|pty|subprocess)|perl[^;]*socket|nc[[:space:]].*(-e|/bin/sh)|authorized_keys|useradd|adduser|usermod|passwd[[:space:]]|chattr[[:space:]]+\+i|systemctl[[:space:]]+(enable|start)|crontab[[:space:]]|nohup|setsid|tmux|screen|iptables|nft[[:space:]]|history[[:space:]]+-c|rm[[:space:]]+-f[[:space:]]+/var/log|truncate[[:space:]].*/var/log'
 }
 
-package_owner() {
-  local f="$1"
-  if have dpkg-query; then
-    dpkg-query -S "$f" 2>/dev/null | head -n1 | cut -d: -f1
-  elif have rpm; then
-    rpm -qf "$f" 2>/dev/null | head -n1
-  elif have apk; then
-    apk info --who-owns "$f" 2>/dev/null | head -n1
-  fi
+is_high_risk_command() {
+  grep -Eqi 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|stratum|authorized_keys|useradd|adduser|usermod|passwd[[:space:]]|/etc/(passwd|shadow|sudoers)|systemctl[[:space:]]+(enable|start)|crontab|/etc/cron|/dev/shm|curl[^|;]*(\||;)[[:space:]]*(ba)?sh|wget[^|;]*(\||;)[[:space:]]*(ba)?sh|base64[[:space:]]+(-d|--decode)|chattr[[:space:]]+\+i|history[[:space:]]+-c|truncate[[:space:]].*/var/log|rm[[:space:]]+-[^;]*/var/log'
 }
 
-get_uid_min() {
-  local n
-  n="$(awk '$1=="UID_MIN"{print $2; exit}' /etc/login.defs 2>/dev/null || true)"
-  [[ "$n" =~ ^[0-9]+$ ]] && echo "$n" || echo 1000
-}
+printf '%s%sNezha Agent 远程命令执行取证 v%s%s\n' "$B" "$BLU" "$VERSION" "$C0"
+printf '主机：%s\n时间：%s\n检查窗口：最近 %s 天（自 %s）\n' \
+  "$(hostname -f 2>/dev/null || hostname)" "$NOW_TEXT" "$DAYS" "$START_TEXT"
+echo "模式：只读。重点还原 nezha-agent 派生的 sh -c 命令、子进程、上传与落地行为。"
 
-collect_auth_logs() {
-  local out="$1"
-  : > "$out"
-  if have journalctl; then
-    journalctl --since "$START_DATE" --no-pager -o short-iso \
-      -u ssh.service -u sshd.service -u systemd-logind.service 2>/dev/null >> "$out" || true
-  fi
-  local f
-  for f in /var/log/auth.log /var/log/auth.log.1 /var/log/secure /var/log/secure-???????? /var/log/messages; do
-    [[ -r "$f" ]] || continue
-    cat -- "$f" 2>/dev/null >> "$out" || true
-  done
-}
+# ---------------------------------------------------------------------------
+section "1. Nezha Agent 运行方式与远程执行开关"
 
-collect_nezha_units() {
-  local out="$1"
-  : > "$out"
-  if have systemctl; then
-    {
-      systemctl list-unit-files --type=service --no-legend 2>/dev/null
-      systemctl list-units --all --type=service --no-legend 2>/dev/null
-    } | awk '{print $1}' | grep -Ei 'nezha.*agent|agent.*nezha' | sort -u > "$out" || true
-  fi
-}
-
-get_nezha_pids() {
-  local out="$1"
-  : > "$out"
-  local p exe cmd
-  for p in /proc/[0-9]*; do
-    [[ -r "$p/cmdline" ]] || continue
-    exe="$(readlink -f "$p/exe" 2>/dev/null || true)"
-    cmd="$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null || true)"
-    if [[ "${exe,,}" == *nezha*agent* || "${cmd,,}" == *nezha-agent* || "${cmd,,}" == *'/opt/nezha/agent/'* ]]; then
-      basename "$p"
-    fi
-  done | sort -n -u > "$out"
-}
-
-descendants_of() {
-  local root="$1" out="$2"
-  : > "$out"
-  local -a queue=("$root")
-  local current child
-  local seen=" $root "
-  while ((${#queue[@]})); do
-    current="${queue[0]}"
-    queue=("${queue[@]:1}")
-    while read -r child; do
-      [[ "$child" =~ ^[0-9]+$ ]] || continue
-      [[ "$seen" == *" $child "* ]] && continue
-      seen+="$child "
-      echo "$child" >> "$out"
-      queue+=("$child")
-    done < <(pgrep -P "$current" 2>/dev/null || true)
-  done
-}
-
-looks_suspicious_command() {
-  grep -Eqi '(^|[ /])(xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|watchbog|watchdogd|dpkgd)([ /]|$)|/dev/shm|/var/tmp|/tmp/\.|curl.+\|[[:space:]]*(ba)?sh|wget.+\|[[:space:]]*(ba)?sh|base64[[:space:]]+-d|chattr[[:space:]]+\+i|authorized_keys|useradd|adduser|usermod|nohup|setsid|systemctl[[:space:]]+(enable|start).*(image-search|xmrig)|stratum\+tcp|pool\.[^ ]+:[0-9]+'
-}
-
-printf '%s%sNezha Agent Linux 入侵痕迹检测 v%s%s\n' "$C_BOLD" "$C_BLUE" "$VERSION" "$C_RESET"
-printf '主机：%s  时间：%s  检查窗口：最近 %s 天（自 %s）\n' "$(hostname -f 2>/dev/null || hostname)" "$NOW" "$DAYS" "$START_DATE"
-echo "模式：只读；不停止服务、不删除文件、不修改系统、不访问互联网。"
-
-section "1. 系统与哪吒 Agent 基线"
-uname -a 2>/dev/null || true
-[[ -r /etc/os-release ]] && { . /etc/os-release; echo "系统：${PRETTY_NAME:-unknown}"; }
-echo "启动时间：$(uptime -s 2>/dev/null || who -b 2>/dev/null | sed 's/^[[:space:]]*//')"
-
-UNITS_FILE="$TMP_ROOT/nezha_units"
-PIDS_FILE="$TMP_ROOT/nezha_pids"
-collect_nezha_units "$UNITS_FILE"
-get_nezha_pids "$PIDS_FILE"
-
-if [[ ! -s "$UNITS_FILE" && ! -s "$PIDS_FILE" ]]; then
-  finding INFO "未发现正在运行或已注册的 nezha-agent；仍继续检查历史入侵痕迹。"
-else
-  finding INFO "发现哪吒 Agent 服务或进程。"
-fi
-
-if [[ -s "$UNITS_FILE" ]]; then
-  subsection "Agent systemd 服务"
-  while read -r unit; do
-    [[ -n "$unit" ]] || continue
-    echo "[$unit]"
-    systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p MainPID -p User \
-      -p FragmentPath -p ExecStart -p ActiveEnterTimestamp --no-pager 2>/dev/null || true
-  done < "$UNITS_FILE"
-fi
-
-if [[ -s "$PIDS_FILE" ]]; then
-  subsection "Agent 进程、二进制与当前连接"
-  while read -r pid; do
-    [[ -d "/proc/$pid" ]] || continue
-    exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
-    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-    echo "PID=$pid EXE=$exe"
-    echo "CMD=$cmd"
-    [[ -f "$exe" ]] && {
-      stat_line "$exe"
-      hash_file "$exe"
-      "$exe" -v 2>&1 | head -n2 || true
-    }
-    if have ss; then
-      ss -Hntp 2>/dev/null | grep -E "pid=$pid([,\)])" || true
-    elif have lsof; then
-      lsof -nP -a -p "$pid" -i 2>/dev/null || true
-    fi
-
-    DESC_FILE="$TMP_ROOT/desc_$pid"
-    descendants_of "$pid" "$DESC_FILE"
-    if [[ -s "$DESC_FILE" ]]; then
-      finding SUSPICIOUS "nezha-agent 当前存在子进程；可能是面板远程命令、终端或文件操作产生。"
-      while read -r cpid; do
-        ps -p "$cpid" -o pid=,ppid=,user=,lstart=,%cpu=,%mem=,args= 2>/dev/null || true
-      done < "$DESC_FILE"
-    fi
-  done < "$PIDS_FILE"
-fi
-
-subsection "Agent 配置文件"
-CONFIGS_FILE="$TMP_ROOT/configs"
-: > "$CONFIGS_FILE"
-find /opt/nezha /etc/nezha /usr/local/nezha /root/.nezha -type f \
-  \( -iname 'config*.yml' -o -iname 'config*.yaml' \) -print 2>/dev/null >> "$CONFIGS_FILE" || true
-while read -r pid; do
-  [[ -r "/proc/$pid/cmdline" ]] || continue
-  tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -E '^/.*\.ya?ml$' >> "$CONFIGS_FILE" || true
-  exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
-  [[ -n "$exe" && -f "$(dirname "$exe")/config.yml" ]] && echo "$(dirname "$exe")/config.yml" >> "$CONFIGS_FILE"
-done < "$PIDS_FILE"
+UNITS="$TMP/units"
+: > "$UNITS"
 if have systemctl; then
-  while read -r unit; do
-    [[ -n "$unit" ]] || continue
-    systemctl show "$unit" -p ExecStart --value 2>/dev/null       | grep -Eo '/[^ ;"{}]+\.ya?ml' >> "$CONFIGS_FILE" || true
-    unit_exec="$(systemctl show "$unit" -p ExecStart --value 2>/dev/null       | grep -Eo 'path=/[^ ;{}]+' | head -n1 | cut -d= -f2- || true)"
-    [[ -n "$unit_exec" && -f "$(dirname "$unit_exec")/config.yml" ]]       && echo "$(dirname "$unit_exec")/config.yml" >> "$CONFIGS_FILE"
-  done < "$UNITS_FILE"
+  {
+    systemctl list-unit-files --type=service --no-legend 2>/dev/null || true
+    systemctl list-units --all --type=service --no-legend 2>/dev/null || true
+  } | awk '{print $1}' | grep -Ei '(^|[-_.])nezha.*agent|agent.*nezha' | sort -u > "$UNITS" || true
 fi
-sort -u -o "$CONFIGS_FILE" "$CONFIGS_FILE"
+for u in nezha-agent.service nezha_agent.service; do
+  if systemctl status "$u" >/dev/null 2>&1; then
+    grep -qxF "$u" "$UNITS" || echo "$u" >> "$UNITS"
+  fi
+done
+sort -u -o "$UNITS" "$UNITS"
 
-if [[ ! -s "$CONFIGS_FILE" ]]; then
-  finding INFO "未找到常见路径下的 Agent YAML 配置。"
+AGENT_PIDS="$TMP/current_agent_pids"
+: > "$AGENT_PIDS"
+for p in /proc/[0-9]*; do
+  [[ -r "$p/cmdline" ]] || continue
+  exe="$(readlink -f "$p/exe" 2>/dev/null || true)"
+  cmd="$(cat "$p/cmdline" 2>/dev/null | tr '\0' ' ' || true)"
+  if [[ "${exe,,}" == *nezha*agent* || "${cmd,,}" == *nezha-agent* || "${cmd,,}" == *'/opt/nezha/agent/'* ]]; then
+    basename "$p"
+  fi
+done | sort -n -u > "$AGENT_PIDS"
+
+if [[ ! -s "$UNITS" && ! -s "$AGENT_PIDS" ]]; then
+  finding RISK "未发现当前运行或注册的 nezha-agent；仍继续检查历史痕迹。"
 else
-  while read -r cfg; do
+  finding INFO "发现 Nezha Agent 服务或进程。"
+fi
+
+REMOTE_DISABLED=0
+REMOTE_ENABLED=0
+CONFIG_FILES="$TMP/config_files"
+: > "$CONFIG_FILES"
+
+if [[ -s "$UNITS" ]]; then
+  while IFS= read -r unit; do
+    [[ -n "$unit" ]] || continue
+    subsection "systemd：$unit"
+    systemctl show "$unit" -p LoadState -p ActiveState -p SubState -p MainPID -p User -p FragmentPath -p ExecStart 2>/dev/null \
+      | redact_secret_text || true
+    systemctl cat "$unit" 2>/dev/null | redact_secret_text || true
+
+    raw="$(systemctl show "$unit" -p ExecStart --value 2>/dev/null || true)"
+    if grep -Eq -- '(^|[[:space:]])--disable-command-execute([=[:space:]]|$)' <<<"$raw"; then
+      ((REMOTE_DISABLED++))
+      finding INFO "$unit 已通过命令行启用 --disable-command-execute。"
+    else
+      ((REMOTE_ENABLED++))
+      finding RISK "$unit 未在 ExecStart 中启用 --disable-command-execute，面板具备下发命令/终端/文件任务的能力。"
+    fi
+
+    # 从 ExecStart 中提取显式配置文件路径。
+    printf '%s\n' "$raw" | grep -oE '(^|[[:space:]])(-c|--config)(=|[[:space:]])[^[:space:];}]+' \
+      | sed -E 's/^[[:space:]]*(-c|--config)(=|[[:space:]])//' >> "$CONFIG_FILES" || true
+  done < "$UNITS"
+fi
+
+find /opt/nezha /etc/nezha /usr/local/etc/nezha /root/.config/nezha /root/.nezha \
+  -maxdepth 4 -type f \( -iname '*agent*.yml' -o -iname '*agent*.yaml' -o -iname 'config.yml' -o -iname 'config.yaml' \) \
+  -print 2>/dev/null >> "$CONFIG_FILES" || true
+sort -u -o "$CONFIG_FILES" "$CONFIG_FILES"
+
+if [[ -s "$CONFIG_FILES" ]]; then
+  subsection "Agent 配置"
+  while IFS= read -r cfg; do
     [[ -r "$cfg" ]] || continue
     echo "[$cfg]"
     stat_line "$cfg"
-    redact_config "$cfg" | grep -Ei '^[[:space:]]*(server|tls|insecure_tls|debug|disable_command_execute|disable_force_update|disable_auto_update|disable_nat|uuid)[[:space:]]*:' || true
-
-    dce="$(key_value_yaml disable_command_execute "$cfg" | tr '[:upper:]' '[:lower:]')"
-    tls="$(key_value_yaml tls "$cfg" | tr '[:upper:]' '[:lower:]')"
-    itls="$(key_value_yaml insecure_tls "$cfg" | tr '[:upper:]' '[:lower:]')"
-    server="$(key_value_yaml server "$cfg")"
-
-    if [[ "$dce" != "true" ]]; then
-      finding HARDENING "$cfg 未明确启用 disable_command_execute: true；面板可下发命令、终端或文件任务。"
-    else
-      finding INFO "$cfg 已禁用面板命令执行。"
+    grep -Ei '^[[:space:]]*(server|tls|insecure_tls|debug|disable_command_execute|disable_force_update|disable_auto_update|disable_nat|uuid)[[:space:]]*:' "$cfg" 2>/dev/null \
+      | redact_secret_text || true
+    val="$(awk 'BEGIN{IGNORECASE=1} $0 !~ /^[[:space:]]*#/ && $0 ~ /^[[:space:]]*disable_command_execute[[:space:]]*:/ {sub(/^[^:]*:[[:space:]]*/,""); gsub(/["[:space:]]/,""); print tolower($0); exit}' "$cfg" 2>/dev/null || true)"
+    if [[ "$val" == "true" ]]; then
+      ((REMOTE_DISABLED++))
+      finding INFO "$cfg 设置了 disable_command_execute: true。"
+    elif [[ -n "$val" ]]; then
+      ((REMOTE_ENABLED++))
+      finding RISK "$cfg 的 disable_command_execute=$val。"
     fi
-    [[ "$tls" == "false" ]] && finding HARDENING "$cfg 配置 tls: false，Agent 与面板通信可能未加密。"
-    [[ "$itls" == "true" ]] && finding HARDENING "$cfg 配置 insecure_tls: true，证书校验被关闭。"
-    [[ -n "$server" ]] && echo "面板地址：$server"
-    if is_recent_file "$cfg"; then
-      finding HARDENING "Agent 配置在最近 $DAYS 天内发生过内容或时间戳变更，请核对变更来源：$cfg"
-    fi
-  done < "$CONFIGS_FILE"
+  done < "$CONFIG_FILES"
 fi
 
-subsection "Agent 日志中的任务、终端、文件传输和异常"
-NEZHA_LOG="$TMP_ROOT/nezha.log"
-: > "$NEZHA_LOG"
+if [[ -s "$AGENT_PIDS" ]]; then
+  subsection "当前 Agent 进程"
+  while IFS= read -r pid; do
+    ps -p "$pid" -o pid=,ppid=,user=,lstart=,etime=,cmd= 2>/dev/null | redact_secret_text || true
+    exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    [[ -n "$exe" && -f "$exe" ]] && { stat_line "$exe"; sha256_file "$exe"; }
+  done < "$AGENT_PIDS"
+fi
+
+# ---------------------------------------------------------------------------
+section "2. 当前仍在运行的 Agent 子进程"
+
+LIVE_OUT="$TMP/live_children"
+: > "$LIVE_OUT"
+declare -A seen_live=()
+queue=()
+while IFS= read -r p; do [[ "$p" =~ ^[0-9]+$ ]] && queue+=("$p"); done < "$AGENT_PIDS"
+
+while ((${#queue[@]})); do
+  parent="${queue[0]}"
+  queue=("${queue[@]:1}")
+  while IFS= read -r child; do
+    [[ "$child" =~ ^[0-9]+$ ]] || continue
+    [[ -n "${seen_live[$child]:-}" ]] && continue
+    seen_live[$child]=1
+    queue+=("$child")
+    ppid="$(awk '{print $4}' "/proc/$child/stat" 2>/dev/null || true)"
+    user="$(ps -p "$child" -o user= 2>/dev/null | xargs || true)"
+    start="$(ps -p "$child" -o lstart= 2>/dev/null | xargs || true)"
+    cmd="$(cat "/proc/$child/cmdline" 2>/dev/null | tr '\0' ' ' || true)"
+    [[ -n "$cmd" ]] || cmd="[$(cat "/proc/$child/comm" 2>/dev/null || echo unknown)]"
+    printf 'pid=%s ppid=%s user=%s start=%s cmd=%s\n' "$child" "$ppid" "$user" "$start" "$cmd" >> "$LIVE_OUT"
+  done < <(pgrep -P "$parent" 2>/dev/null || true)
+done
+
+if [[ -s "$LIVE_OUT" ]]; then
+  LIVE_CHILDREN="$(wc -l < "$LIVE_OUT")"
+  finding HIGH "nezha-agent 当前存在 $LIVE_CHILDREN 个后代进程；可能是远程命令、在线终端或其遗留进程。"
+  print_limited "$LIVE_OUT"
+  while IFS= read -r line; do
+    if grep -Eqi 'cmd=([^ ]*/)?(sh|bash|dash)[[:space:]]+-c[[:space:]]' <<<"$line"; then
+      finding CONFIRMED "发现 Agent 当前派生的 shell -c：$line"
+    elif is_suspicious_text <<<"$line"; then
+      finding HIGH "Agent 子进程命中高风险特征：$line"
+    fi
+  done < "$LIVE_OUT"
+else
+  finding INFO "当前未发现 nezha-agent 子进程。"
+fi
+
+# ---------------------------------------------------------------------------
+section "3. Agent 日志中的任务、终端和文件传输"
+
+JOURNAL_RAW="$TMP/agent_journal.log"
+JOURNAL_JSON="$TMP/agent_journal.jsonl"
+: > "$JOURNAL_RAW"; : > "$JOURNAL_JSON"
+
 if have journalctl; then
-  while read -r unit; do
-    journalctl -u "$unit" --since "$START_DATE" --no-pager -o short-iso 2>/dev/null >> "$NEZHA_LOG" || true
-  done < "$UNITS_FILE"
-  journalctl --since "$START_DATE" --no-pager -o short-iso _COMM=nezha-agent 2>/dev/null >> "$NEZHA_LOG" || true
+  if [[ -s "$UNITS" ]]; then
+    while IFS= read -r unit; do
+      journalctl --since "@$START_EPOCH" --no-pager -o short-iso-precise -u "$unit" 2>/dev/null >> "$JOURNAL_RAW" || true
+      journalctl --since "@$START_EPOCH" --no-pager -o json -u "$unit" 2>/dev/null >> "$JOURNAL_JSON" || true
+    done < "$UNITS"
+  fi
+  journalctl --since "@$START_EPOCH" --no-pager -o short-iso-precise _COMM=nezha-agent 2>/dev/null >> "$JOURNAL_RAW" || true
+  journalctl --since "@$START_EPOCH" --no-pager -o json _COMM=nezha-agent 2>/dev/null >> "$JOURNAL_JSON" || true
 fi
-sort -u -o "$NEZHA_LOG" "$NEZHA_LOG" 2>/dev/null || true
-NEZHA_RELEVANT="$TMP_ROOT/nezha_relevant"
-grep -Ei 'task|command|terminal|iostream|fm|fstransfer|fs(write|read|delete|list)|upload|download|exec|执行|命令|终端|文件|传输|panic|failed|error|reconnect|connection to' "$NEZHA_LOG" 2>/dev/null > "$NEZHA_RELEVANT" || true
-if [[ -s "$NEZHA_RELEVANT" ]]; then
-  print_limited_file "$NEZHA_RELEVANT"
-  if grep -Eqi 'fstransfer|upload|download|terminal|executing.*task|command task|fs(write|delete)|文件传输|在线终端' "$NEZHA_RELEVANT"; then
-    finding SUSPICIOUS "Agent 日志出现远程终端、命令或文件操作相关记录，请逐条核对时间和来源。"
+
+JOURNAL_RELEVANT="$TMP/journal_relevant"
+grep -Ei 'Executing|Task|Command|terminal|iostream|MCP|FsTransfer|fs\.|upload|download|file|shell|执行|命令|终端|文件|传输|failed|error|panic' \
+  "$JOURNAL_RAW" 2>/dev/null | awk '!seen[$0]++' > "$JOURNAL_RELEVANT" || true
+
+if [[ -s "$JOURNAL_RELEVANT" ]]; then
+  print_limited "$JOURNAL_RELEVANT"
+  if grep -Eqi 'FsTransfer|upload|download|terminal|iostream|Executing.*Task|Command Task|MCP.*exec|在线终端|文件传输' "$JOURNAL_RELEVANT"; then
+    finding SUSPICIOUS "Agent 日志出现任务、终端或文件传输相关记录；日志通常不包含完整命令正文。"
   else
-    finding INFO "Agent 日志存在连接或任务相关记录，但未匹配到明确的成功命令/上传痕迹。"
+    finding INFO "Agent 日志存在异常/重连记录，但未匹配明确任务类型。"
   fi
 else
-  finding INFO "未在 journald 中找到 Agent 任务相关日志；这不代表从未执行过远程命令。"
+  finding GAP "未找到 Agent 任务日志。日志缺失不能证明从未执行过远程命令。"
 fi
 
-section "2. 截图所示 IOC 与挖矿/后门特征"
-IOC_HIT=0
+# 从 journald JSON 建立历史 Agent PID 时间窗口，减少 PID 复用造成的误报。
+PID_WINDOWS="$TMP/agent_pid_windows.tsv"
+: > "$PID_WINDOWS"
+if have python3 && [[ -s "$JOURNAL_JSON" ]]; then
+  python3 - "$JOURNAL_JSON" "$PID_WINDOWS" <<'PY' 2>/dev/null || true
+import json, sys
+src, dst = sys.argv[1:3]
+w = {}
+with open(src, 'r', errors='replace') as f:
+    for line in f:
+        try:
+            o = json.loads(line)
+            pid = int(o.get('_PID', 0))
+            ts = int(o.get('__REALTIME_TIMESTAMP', 0)) // 1_000_000
+            comm = str(o.get('_COMM', ''))
+            exe = str(o.get('_EXE', ''))
+            if pid <= 0 or ts <= 0:
+                continue
+            if 'nezha' not in (comm + ' ' + exe).lower() and 'agent' not in (comm + ' ' + exe).lower():
+                # unit 查询的记录可能包含 systemd 自身信息；只保留 agent 进程。
+                continue
+            if pid not in w:
+                w[pid] = [ts, ts]
+            else:
+                w[pid][0] = min(w[pid][0], ts)
+                w[pid][1] = max(w[pid][1], ts)
+        except Exception:
+            pass
+with open(dst, 'w') as out:
+    for pid, (a, b) in sorted(w.items()):
+        out.write(f"{pid}\t{a}\t{b}\n")
+PY
+fi
 
-check_ioc_path() {
-  local path="$1" desc="$2"
-  if [[ -e "$path" || -L "$path" ]]; then
-    finding CRITICAL "命中截图 IOC：$desc：$path"
-    stat_line "$path"
-    describe_file "$path"
-    hash_file "$path"
-    IOC_HIT=1
+# 当前 PID 的窗口从进程启动时间延伸到现在。
+BOOT_EPOCH="$(awk -v n="$NOW_EPOCH" '{printf "%d", n-$1}' /proc/uptime 2>/dev/null || echo "$START_EPOCH")"
+CLK_TCK="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+while IFS= read -r pid; do
+  ticks="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || echo 0)"
+  if [[ "$ticks" =~ ^[0-9]+$ && "$CLK_TCK" =~ ^[0-9]+$ && "$CLK_TCK" -gt 0 ]]; then
+    start=$((BOOT_EPOCH + ticks / CLK_TCK))
+  else
+    start="$START_EPOCH"
   fi
+  printf '%s\t%s\t%s\n' "$pid" "$start" "$NOW_EPOCH" >> "$PID_WINDOWS"
+done < "$AGENT_PIDS"
+sort -n -k1,1 -k2,2 -u -o "$PID_WINDOWS" "$PID_WINDOWS"
+
+# ---------------------------------------------------------------------------
+section "4. auditd：精确还原 Agent 下发的命令"
+
+echo "判定原理：Linux 版 Nezha 远程命令由 Agent 直接启动 sh -c <命令>。"
+echo "若 auditd 当时记录了 EXECVE，可从 a2/PROCTITLE 还原完整命令，并沿 PPID 追踪子进程。"
+
+AUDIT_RULES="$TMP/audit_rules"
+: > "$AUDIT_RULES"
+AUDIT_ENABLED=0
+AUDIT_EXEC_COVERAGE=0
+if have auditctl; then
+  auditctl -s 2>/dev/null || true
+  auditctl -l 2>/dev/null | tee "$AUDIT_RULES" || true
+  auditctl -s 2>/dev/null | grep -Eq '^enabled[[:space:]]+[12]' && AUDIT_ENABLED=1 || true
+  grep -Eqi '(-S[[:space:]]+([^#]*,)?(execve|execveat)|perm=x|[[:space:]]-S[[:space:]]+all)' "$AUDIT_RULES" && AUDIT_EXEC_COVERAGE=1 || true
+fi
+
+AUDIT_FILES=()
+while IFS= read -r f; do AUDIT_FILES+=("$f"); done < <(
+  find /var/log/audit -maxdepth 1 -type f \( -name 'audit.log' -o -name 'audit.log.*' -o -name 'audit.log*.gz' \) -print 2>/dev/null \
+    | xargs -r ls -1tr 2>/dev/null
+)
+
+AUDIT_OUT="$TMP/audit_lineage.tsv"
+AUDIT_META="$TMP/audit_meta"
+: > "$AUDIT_OUT"; : > "$AUDIT_META"
+
+if have python3 && ((${#AUDIT_FILES[@]})); then
+  START_EPOCH="$START_EPOCH" PID_WINDOWS="$PID_WINDOWS" python3 - "$AUDIT_OUT" "$AUDIT_META" "${AUDIT_FILES[@]}" <<'PY' || true
+import os, re, sys, gzip, ast, datetime
+from collections import OrderedDict, defaultdict
+
+out_path, meta_path, *files = sys.argv[1:]
+start_epoch = float(os.environ.get('START_EPOCH', '0'))
+windows_path = os.environ.get('PID_WINDOWS', '')
+
+kv_re = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*|a\d+)=((?:"(?:\\.|[^"\\])*")|\S+)')
+event_re = re.compile(r'msg=audit\((\d+(?:\.\d+)?):(\d+)\)')
+type_re = re.compile(r'^type=([^ ]+)')
+hex_re = re.compile(r'^[0-9A-Fa-f]+$')
+
+def dec(v):
+    if v is None:
+        return ''
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        try:
+            return ast.literal_eval(v)
+        except Exception:
+            return v[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+    if hex_re.match(v) and len(v) % 2 == 0 and len(v) >= 4:
+        try:
+            b = bytes.fromhex(v)
+            if b'\x00' in b or all((32 <= x < 127) or x in (9,10,13) for x in b):
+                return b.decode('utf-8', 'replace').replace('\x00', ' ')
+        except Exception:
+            pass
+    return v
+
+def parse_fields(line):
+    return {k: dec(v) for k, v in kv_re.findall(line)}
+
+def opener(path):
+    return gzip.open(path, 'rt', errors='replace') if path.endswith('.gz') else open(path, 'r', errors='replace')
+
+def iter_events(paths):
+    # Audit records for one serial are normally adjacent. Keep a bounded buffer for occasional interleaving.
+    buf = OrderedDict()
+    for path in paths:
+        try:
+            f = opener(path)
+        except Exception:
+            continue
+        with f:
+            for line in f:
+                m = event_re.search(line)
+                if not m:
+                    continue
+                ts, serial = float(m.group(1)), m.group(2)
+                if ts < start_epoch:
+                    continue
+                key = (ts, serial)
+                e = buf.setdefault(key, {'ts': ts, 'serial': serial, 'records': []})
+                e['records'].append(line.rstrip('\n'))
+                buf.move_to_end(key)
+                if len(buf) > 512:
+                    _, old = buf.popitem(last=False)
+                    yield enrich(old)
+    for _, e in buf.items():
+        yield enrich(e)
+
+def enrich(e):
+    e.update({'pid':0,'ppid':0,'uid':'','euid':'','auid':'','comm':'','exe':'','success':'',
+              'argv':{},'proctitle':'','cwd':'','paths':[],'syscall':''})
+    for line in e['records']:
+        tm = type_re.search(line)
+        typ = tm.group(1) if tm else ''
+        f = parse_fields(line)
+        if typ == 'SYSCALL':
+            for k in ('pid','ppid'):
+                try: e[k] = int(f.get(k, e[k]) or 0)
+                except Exception: pass
+            for k in ('uid','euid','auid','comm','exe','success','syscall'):
+                if f.get(k, '') != '': e[k] = f[k]
+        elif typ == 'EXECVE':
+            for k,v in f.items():
+                if re.fullmatch(r'a\d+', k):
+                    e['argv'][int(k[1:])] = v
+        elif typ == 'PROCTITLE':
+            e['proctitle'] = dec(f.get('proctitle',''))
+        elif typ == 'CWD':
+            e['cwd'] = f.get('cwd','')
+        elif typ == 'PATH':
+            name = f.get('name','')
+            if name:
+                e['paths'].append((f.get('nametype',''), name))
+    return e
+
+def argv_text(e):
+    if e['argv']:
+        vals = [e['argv'][k] for k in sorted(e['argv'])]
+        return ' '.join(vals)
+    return e['proctitle'].strip()
+
+def iso(ts):
+    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).astimezone().isoformat(timespec='seconds')
+
+def clean(s):
+    return str(s or '').replace('\t',' ').replace('\r',' ').replace('\n',' \\n ')
+
+# Journal/current-PID windows.
+windows = defaultdict(list)
+if windows_path and os.path.exists(windows_path):
+    with open(windows_path, errors='replace') as f:
+        for line in f:
+            try:
+                pid,a,b = map(int, line.rstrip().split('\t')[:3])
+                windows[pid].append((a-300, b+3600))
+            except Exception:
+                pass
+
+# First pass: find agent process starts in audit itself.
+agent_starts = []
+for e in iter_events(files):
+    blob = (e['comm'] + ' ' + e['exe'] + ' ' + argv_text(e)).lower()
+    if e['pid'] > 0 and ('nezha-agent' in blob or '/opt/nezha/agent/' in blob):
+        agent_starts.append((e['ts'], e['pid']))
+
+# A started agent PID is valid until the next observed agent start, capped at now.
+agent_starts.sort()
+now = datetime.datetime.now().timestamp()
+for i,(ts,pid) in enumerate(agent_starts):
+    end = now
+    if i+1 < len(agent_starts):
+        end = max(ts+60, agent_starts[i+1][0] + 180)
+    windows[pid].append((ts-60, end))
+
+def is_agent_pid(pid, ts):
+    return any(a <= ts <= b for a,b in windows.get(pid, []))
+
+# Descendant PID -> expiry. Remote command timeout is 2h; allow 4h for nested exec evidence.
+lineage = {}
+direct_count = child_count = file_count = exec_events = 0
+rows = []
+seen_rows = set()
+
+for e in iter_events(files):
+    if e['argv'] or e['proctitle']:
+        exec_events += 1
+    ts, pid, ppid = e['ts'], e['pid'], e['ppid']
+    direct = ppid > 0 and is_agent_pid(ppid, ts)
+    child = ppid in lineage and ts <= lineage.get(ppid, 0)
+    current_lineage = pid in lineage and ts <= lineage.get(pid, 0)
+    kind = ''
+    if direct:
+        kind = 'DIRECT'
+        lineage[pid] = ts + 4*3600
+    elif child:
+        kind = 'CHILD'
+        lineage[pid] = max(lineage.get(ppid, ts + 4*3600), ts + 600)
+
+    if kind and (e['argv'] or e['proctitle']):
+        args = [e['argv'][k] for k in sorted(e['argv'])] if e['argv'] else []
+        cmd = argv_text(e)
+        exact = ''
+        if len(args) >= 3 and os.path.basename(args[0]) in ('sh','dash','bash') and args[1] == '-c':
+            exact = ' '.join(args[2:])
+        display = exact or cmd
+        paths = '; '.join(f'{nt}:{name}' if nt else name for nt,name in e['paths'][:30])
+        row = (kind, iso(ts), str(pid), str(ppid), e['exe'], e['cwd'], display, paths)
+        if row not in seen_rows:
+            seen_rows.add(row); rows.append(row)
+            if kind == 'DIRECT': direct_count += 1
+            else: child_count += 1
+
+    if (current_lineage or kind) and e['paths']:
+        interesting = []
+        for nt,name in e['paths']:
+            low = name.lower()
+            if nt.upper() in ('CREATE','DELETE') or low.startswith(('/tmp/','/var/tmp/','/dev/shm/','/etc/','/root/','/home/','/opt/','/usr/local/')):
+                interesting.append(f'{nt}:{name}' if nt else name)
+        if interesting:
+            cmd = argv_text(e) or e['comm']
+            row = ('FILE', iso(ts), str(pid), str(ppid), e['exe'], e['cwd'], cmd, '; '.join(interesting[:50]))
+            if row not in seen_rows:
+                seen_rows.add(row); rows.append(row); file_count += 1
+
+with open(out_path, 'w') as out:
+    for row in sorted(rows, key=lambda r: r[1]):
+        out.write('\t'.join(clean(x) for x in row) + '\n')
+with open(meta_path, 'w') as m:
+    m.write(f'direct={direct_count}\nchild={child_count}\nfile={file_count}\nexec_events={exec_events}\nagent_pids={len(windows)}\n')
+PY
+
+  if [[ -s "$AUDIT_META" ]]; then
+    AUDIT_DIRECT="$(awk -F= '$1=="direct"{print $2}' "$AUDIT_META" 2>/dev/null || echo 0)"
+    AUDIT_CHILD="$(awk -F= '$1=="child"{print $2}' "$AUDIT_META" 2>/dev/null || echo 0)"
+    AUDIT_FILEOPS="$(awk -F= '$1=="file"{print $2}' "$AUDIT_META" 2>/dev/null || echo 0)"
+    AUDIT_EXEC_EVENTS="$(awk -F= '$1=="exec_events"{print $2}' "$AUDIT_META" 2>/dev/null || echo 0)"
+  else
+    AUDIT_EXEC_EVENTS=0
+  fi
+
+  DIRECT_OUT="$TMP/audit_direct"
+  CHILD_OUT="$TMP/audit_child"
+  FILE_OUT="$TMP/audit_files"
+  awk -F '\t' '$1=="DIRECT" {printf "时间=%s pid=%s ppid=%s exe=%s cwd=%s\n命令=%s\n相关路径=%s\n---\n",$2,$3,$4,$5,$6,$7,$8}' "$AUDIT_OUT" > "$DIRECT_OUT" || true
+  awk -F '\t' '$1=="CHILD" {printf "时间=%s pid=%s ppid=%s exe=%s cwd=%s\n子进程=%s\n相关路径=%s\n---\n",$2,$3,$4,$5,$6,$7,$8}' "$AUDIT_OUT" > "$CHILD_OUT" || true
+  awk -F '\t' '$1=="FILE" {printf "时间=%s pid=%s ppid=%s exe=%s cwd=%s\n进程=%s\n文件=%s\n---\n",$2,$3,$4,$5,$6,$7,$8}' "$AUDIT_OUT" > "$FILE_OUT" || true
+
+  subsection "已确认由 Agent 直接启动的命令"
+  if [[ "$AUDIT_DIRECT" =~ ^[0-9]+$ ]] && ((AUDIT_DIRECT > 0)); then
+    finding CONFIRMED "auditd 还原出 $AUDIT_DIRECT 条由 nezha-agent 直接派生的命令。"
+    print_limited "$DIRECT_OUT"
+    while IFS=$'\t' read -r kind ts pid ppid exe cwd command paths; do
+      [[ "$kind" == "DIRECT" ]] || continue
+      if is_high_risk_command <<<"$command"; then
+        finding HIGH "远程命令包含高风险行为：时间=$ts 命令=$command"
+      elif is_suspicious_text <<<"$command"; then
+        finding SUSPICIOUS "远程命令包含可疑行为：时间=$ts 命令=$command"
+      fi
+    done < "$AUDIT_OUT"
+  else
+    finding INFO "audit 日志中未还原出 Agent 直接派生命令。"
+  fi
+
+  subsection "远程命令继续启动的子进程"
+  if [[ "$AUDIT_CHILD" =~ ^[0-9]+$ ]] && ((AUDIT_CHILD > 0)); then
+    finding SUSPICIOUS "发现 $AUDIT_CHILD 条 Agent 命令的后续子进程执行记录。"
+    print_limited "$CHILD_OUT"
+  else
+    echo "未发现可关联的后续子进程记录。"
+  fi
+
+  subsection "Agent 命令进程关联的文件路径"
+  if [[ "$AUDIT_FILEOPS" =~ ^[0-9]+$ ]] && ((AUDIT_FILEOPS > 0)); then
+    finding SUSPICIOUS "发现 $AUDIT_FILEOPS 条与 Agent 命令进程相关的文件路径记录。"
+    print_limited "$FILE_OUT"
+  else
+    echo "未发现可关联的文件操作记录。"
+  fi
+
+  if ((AUDIT_ENABLED == 0)); then
+    finding GAP "auditd 当前未启用；日志可能来自旧文件，当前及未来命令不一定被记录。"
+  elif ((AUDIT_EXEC_COVERAGE == 0)); then
+    finding GAP "未在当前 audit 规则中发现 execve/执行监控规则；即使没有命中，也不能证明未执行命令。"
+  else
+    finding INFO "当前 audit 规则包含进程执行监控，历史还原可信度较高。"
+  fi
+  if [[ "$AUDIT_EXEC_EVENTS" =~ ^[0-9]+$ ]] && ((AUDIT_EXEC_EVENTS == 0)); then
+    finding GAP "检查窗口内 audit 日志没有 EXECVE/PROCTITLE 记录。"
+  fi
+else
+  if ! have python3; then
+    finding GAP "系统没有 python3，无法解析并关联 audit 事件。"
+  fi
+  if ((${#AUDIT_FILES[@]} == 0)); then
+    finding GAP "未找到 /var/log/audit/audit.log*，无法精确还原历史远程命令。"
+  fi
+  if ((${#AUDIT_FILES[@]})); then
+    subsection "audit 日志关键词降级检查"
+    zgrep -hEi 'nezha-agent|/opt/nezha/agent|comm="(sh|bash|dash)"|\.mcp-xfer-' "${AUDIT_FILES[@]}" 2>/dev/null \
+      | sed -n "1,${MAX_ITEMS}p" || true
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+section "5. 文件上传、脚本落地与近期可执行文件"
+
+SCAN_ROOTS=(/opt/nezha /tmp /var/tmp /dev/shm /root /home /usr/local/bin /usr/local/sbin /etc/systemd/system /etc/cron.d /var/spool/cron /etc/ssh)
+if ((DEEP_SCAN)); then
+  SCAN_ROOTS=(/)
+  finding INFO "已启用深度扫描；将扫描根文件系统并跳过 proc/sys/dev/run。"
+fi
+
+MCP_TEMP="$TMP/mcp_temp"
+: > "$MCP_TEMP"
+if ((DEEP_SCAN)); then
+  find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /run \) -prune -o \
+    -type f -name '.mcp-xfer-*' -print 2>/dev/null > "$MCP_TEMP" || true
+else
+  for r in "${SCAN_ROOTS[@]}"; do
+    [[ -e "$r" ]] || continue
+    find "$r" -xdev -type f -name '.mcp-xfer-*' -print 2>/dev/null >> "$MCP_TEMP" || true
+  done
+fi
+sort -u -o "$MCP_TEMP" "$MCP_TEMP"
+
+if [[ -s "$MCP_TEMP" ]]; then
+  MCP_TEMP_COUNT="$(wc -l < "$MCP_TEMP")"
+  finding HIGH "发现 $MCP_TEMP_COUNT 个 Nezha MCP 文件传输临时文件（.mcp-xfer-*）；可能是中断或失败的上传。"
+  while IFS= read -r f; do
+    stat_line "$f"
+    have file && file -L -- "$f" 2>/dev/null || true
+    sha256_file "$f"
+  done < <(sed -n "1,${MAX_ITEMS}p" "$MCP_TEMP")
+else
+  finding INFO "未发现残留的 .mcp-xfer-* 临时上传文件。"
+fi
+
+RECENT_FILES="$TMP/recent_susp_files"
+: > "$RECENT_FILES"
+find_recent() {
+  local root="$1"
+  [[ -e "$root" ]] || return 0
+  find "$root" -xdev -type f -newermt "@$START_EPOCH" \
+    \( -perm /111 \
+       -o -iname '*.sh' -o -iname '*.bash' -o -iname '*.py' -o -iname '*.pl' -o -iname '*.php' \
+       -o -iname '*.so' -o -iname '*.service' -o -iname '*.timer' -o -iname '*.socket' \
+       -o -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.zip' -o -iname '*.7z' \
+       -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.gif' \
+       -o -name 'authorized_keys' -o -name 'authorized_keys2' \) \
+    -printf '%T@\t%p\n' 2>/dev/null || true
 }
 
-check_ioc_path /usr/bin/dpkgd "疑似伪装 rootkit/后门文件"
-check_ioc_path /etc/systemd/system/image-search.service "可疑持久化 systemd 服务"
-check_ioc_path /usr/lib/systemd/system/image-search.service "可疑持久化 systemd 服务"
-check_ioc_path /lib/systemd/system/image-search.service "可疑持久化 systemd 服务"
-
-IOC_FILES="$TMP_ROOT/ioc_files"
-find /opt/nezha /tmp /var/tmp /dev/shm /usr/local/bin /usr/bin /usr/local/sbin /usr/sbin \
-  -xdev -type f \( -iname '*xmrig*' -o -iname 'dpkgd' -o -iname '*image-search*' \
-  -o -iname '*kdevtmpfsi*' -o -iname '*kinsing*' -o -iname '*minerd*' -o -iname '*cpuminer*' \) \
-  -print 2>/dev/null > "$IOC_FILES" || true
-if [[ -s "$IOC_FILES" ]]; then
-  finding CRITICAL "发现挖矿、伪装系统命令或截图同类 IOC 文件。"
-  while read -r f; do
-    stat_line "$f"; describe_file "$f"; hash_file "$f"
-  done < "$IOC_FILES"
-  IOC_HIT=1
-fi
-
-MCP_TEMP="$TMP_ROOT/mcp_transfer_temp"
-find /opt/nezha /tmp /var/tmp /dev/shm -xdev -type f -name '.mcp-xfer-*' -print 2>/dev/null > "$MCP_TEMP" || true
-if [[ -s "$MCP_TEMP" ]]; then
-  finding SUSPICIOUS "发现 Nezha MCP 文件传输临时文件，可能存在正在进行或异常中断的面板上传。"
-  while read -r f; do stat_line "$f"; describe_file "$f"; hash_file "$f"; done < "$MCP_TEMP"
-fi
-
-PROC_ALL="$TMP_ROOT/processes"
-ps -eo pid=,ppid=,user=,lstart=,%cpu=,%mem=,args= --sort=-%cpu 2>/dev/null > "$PROC_ALL" || true
-PROC_SUS="$TMP_ROOT/process_suspicious"
-grep -Ei 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|stratum|/usr/bin/dpkgd|image-search|/dev/shm|/var/tmp|/tmp/\.' "$PROC_ALL" > "$PROC_SUS" || true
-if [[ -s "$PROC_SUS" ]]; then
-  finding CRITICAL "发现疑似挖矿、后门或从临时目录运行的进程。"
-  print_limited_file "$PROC_SUS"
-  IOC_HIT=1
+if ((DEEP_SCAN)); then
+  find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /var/lib/docker/overlay2 \) -prune -o \
+    -type f -newermt "@$START_EPOCH" \
+    \( -perm /111 -o -iname '*.sh' -o -iname '*.py' -o -iname '*.service' -o -iname '*.so' \
+       -o -iname '*.zip' -o -iname '*.tgz' -o -iname '*.jpg' -o -iname '*.png' -o -name 'authorized_keys' \) \
+    -printf '%T@\t%p\n' 2>/dev/null > "$RECENT_FILES" || true
 else
-  finding INFO "未发现典型 XMRig/矿池/临时目录恶意进程。"
+  for r in "${SCAN_ROOTS[@]}"; do find_recent "$r" >> "$RECENT_FILES"; done
 fi
+sort -nr -k1,1 -u "$RECENT_FILES" -o "$RECENT_FILES"
 
-subsection "CPU 占用最高的进程"
-sed -n '1,15p' "$PROC_ALL"
+# 仅把高风险目录或高风险文件名计入告警，其余作为时间线信息。
+RECENT_HIGH="$TMP/recent_high"
+awk -F '\t' 'tolower($2) ~ /^\/(tmp|var\/tmp|dev\/shm)\// || tolower($2) ~ /(xmrig|miner|kdevtmpfsi|kinsing|dpkgd|\.mcp-xfer-|authorized_keys|\/etc\/systemd\/system\/|\/etc\/cron|\/var\/spool\/cron)/ {print}' "$RECENT_FILES" > "$RECENT_HIGH" || true
 
-if have tmux; then
-  TMUX_OUT="$TMP_ROOT/tmux"
-  tmux ls 2>&1 | tee "$TMUX_OUT" || true
-  if grep -Eqi '(^|[[:space:]:])xmr([[:space:]:-]|$)|xmrig' "$TMUX_OUT"; then
-    finding CRITICAL "发现名为 xmr/xmrig 的 tmux 会话，与截图特征一致。"
-    IOC_HIT=1
-  fi
-fi
-if have screen; then
-  SCREEN_OUT="$TMP_ROOT/screen"
-  screen -ls 2>&1 | tee "$SCREEN_OUT" || true
-  grep -Eqi 'xmr|xmrig' "$SCREEN_OUT" && finding CRITICAL "发现可疑 screen 挖矿会话。"
-fi
-
-if have ss; then
-  NET_SUS="$TMP_ROOT/net_suspicious"
-  ss -Hantp 2>/dev/null | grep -E ':(3333|4444|5555|7777|8888|9999|14444|19999)([[:space:]]|$)|xmrig|minerd|cpuminer' > "$NET_SUS" || true
-  if [[ -s "$NET_SUS" ]]; then
-    finding SUSPICIOUS "发现常见矿池端口或挖矿进程网络连接。"
-    print_limited_file "$NET_SUS"
-  fi
-fi
-
-section "3. 用户账号、UID 0、sudo 与密码状态"
-UID_MIN="$(get_uid_min)"
-echo "系统 UID_MIN=$UID_MIN"
-
-UID0_FILE="$TMP_ROOT/uid0"
-awk -F: '$3==0{print $1 ": uid=" $3 " gid=" $4 " home=" $6 " shell=" $7}' /etc/passwd > "$UID0_FILE"
-cat "$UID0_FILE"
-if [[ "$(wc -l < "$UID0_FILE")" -gt 1 ]]; then
-  finding CRITICAL "除 root 外存在其他 UID=0 账号。"
-fi
-
-LOGIN_USERS="$TMP_ROOT/login_users"
-awk -F: -v min="$UID_MIN" '
-  $7 !~ /(nologin|false|sync|shutdown|halt)$/ {
-    type=($3==0?"UID0":($3>=min?"普通账号":"系统账号"))
-    print type ": user=" $1 " uid=" $3 " gid=" $4 " home=" $6 " shell=" $7
-  }' /etc/passwd > "$LOGIN_USERS"
-subsection "具有可登录 Shell 的账号"
-cat "$LOGIN_USERS"
-SYSTEM_LOGIN_COUNT="$(grep -c '^系统账号:' "$LOGIN_USERS" 2>/dev/null || true)"
-if [[ "$SYSTEM_LOGIN_COUNT" =~ ^[0-9]+$ ]] && ((SYSTEM_LOGIN_COUNT > 0)); then
-  finding SUSPICIOUS "存在具有交互 Shell 的低 UID 系统账号，请确认是否符合基线。"
-fi
-
-if getent passwd gary >/dev/null 2>&1; then
-  finding CRITICAL "命中截图 IOC：发现账号 gary。"
-  getent passwd gary
-  IOC_HIT=1
-fi
-
-EMPTY_PASS="$TMP_ROOT/empty_passwords"
-awk -F: '($2==""){print $1}' /etc/shadow 2>/dev/null > "$EMPTY_PASS" || true
-if [[ -s "$EMPTY_PASS" ]]; then
-  finding CRITICAL "发现密码字段为空的账号：$(paste -sd, "$EMPTY_PASS")"
-fi
-
-subsection "管理员组成员"
-for grp in sudo wheel admin; do
-  getent group "$grp" 2>/dev/null || true
-done
-
-SUDOERS_ALL="$TMP_ROOT/sudoers"
-: > "$SUDOERS_ALL"
-for f in /etc/sudoers /etc/sudoers.d/*; do
-  [[ -r "$f" && -f "$f" ]] || continue
-  echo "### $f" >> "$SUDOERS_ALL"
-  grep -Ev '^[[:space:]]*($|#)' "$f" >> "$SUDOERS_ALL" || true
-  if is_recent_file "$f"; then
-    finding SUSPICIOUS "sudo 配置在最近 $DAYS 天内有变更：$f"
-  fi
-done
-print_limited_file "$SUDOERS_ALL"
-if grep -Eqi 'NOPASSWD' "$SUDOERS_ALL"; then
-  finding HARDENING "存在免密 sudo，请核对授权对象。"
-fi
-
-for f in /etc/passwd /etc/shadow /etc/group /etc/gshadow; do
-  [[ -e "$f" ]] || continue
-  stat_line "$f"
-  if is_recent_file "$f"; then
-    finding HARDENING "$f 在最近 $DAYS 天内发生过内容或时间戳变更；请结合 useradd/usermod 日志核查。"
-  fi
-done
-
-AUTH_LOG="$TMP_ROOT/auth.log"
-collect_auth_logs "$AUTH_LOG"
-ACCOUNT_EVENTS="$TMP_ROOT/account_events"
-grep -Ei 'useradd|adduser|new user|usermod|userdel|groupadd|chpasswd|passwd.*changed|sudoers|visudo' "$AUTH_LOG" > "$ACCOUNT_EVENTS" || true
-if [[ -s "$ACCOUNT_EVENTS" ]]; then
-  finding SUSPICIOUS "发现账号、组、密码或 sudo 配置变更日志。"
-  print_limited_file "$ACCOUNT_EVENTS"
-else
-  finding INFO "未在可用认证日志中找到账号创建/修改记录。"
-fi
-
-section "4. SSH 公钥、登录来源与 SSH 配置"
-AUTHORIZED_FILES="$TMP_ROOT/authorized_files"
-find /root /home /etc/ssh -xdev -type f \( -name authorized_keys -o -name authorized_keys2 \) -print 2>/dev/null | sort -u > "$AUTHORIZED_FILES" || true
-
-if [[ ! -s "$AUTHORIZED_FILES" ]]; then
-  finding INFO "未发现 authorized_keys 文件。"
-else
-  while read -r ak; do
-    echo "[$ak]"
-    stat_line "$ak"
-    perms="$(stat -Lc '%a' "$ak" 2>/dev/null || stat -c '%a' "$ak" 2>/dev/null || echo unknown)"
-    mode3="${perms: -3}"
-    if [[ "$mode3" =~ ^[0-7]{3}$ ]]; then
-      group_digit="${mode3:1:1}"; other_digit="${mode3:2:1}"
-      if (((10#$group_digit & 2) != 0 || (10#$other_digit & 2) != 0)); then
-        finding SUSPICIOUS "SSH authorized_keys 对组或其他用户可写：$ak 权限=$perms"
-      fi
-    fi
-    if is_recent_file "$ak"; then
-      finding SUSPICIOUS "SSH 公钥文件在最近 $DAYS 天内有变更：$ak"
-    fi
-
-    line_no=0
-    while IFS= read -r line; do
-      ((line_no++))
-      [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]] || continue
-      KEY_TMP="$TMP_ROOT/key_${line_no}_$RANDOM"
-      printf '%s\n' "$line" > "$KEY_TMP"
-      if have ssh-keygen; then
-        fp="$(ssh-keygen -lf "$KEY_TMP" 2>/dev/null || true)"
-        if [[ -n "$fp" ]]; then
-          echo "  line=$line_no $fp"
-        else
-          echo "  line=$line_no 非标准或无法解析的公钥行：$(printf '%s' "$line" | cut -c1-120)"
-          finding SUSPICIOUS "authorized_keys 中存在无法解析的条目：$ak:$line_no"
-        fi
-      else
-        echo "  line=$line_no key_type=$(printf '%s' "$line" | awk '{print $1}')（未安装 ssh-keygen，无法计算指纹）"
-      fi
-      if grep -Eqi 'gary@gary|command=|permitopen=|environment=|from=' "$KEY_TMP"; then
-        echo "  选项/注释：$(printf '%s' "$line" | sed -E 's/[A-Za-z0-9+\/=]{80,}/<KEY_DATA>/g' | cut -c1-240)"
-      fi
-      if grep -Eqi 'gary@gary' "$KEY_TMP"; then
-        finding CRITICAL "命中截图 IOC：authorized_keys 中发现 gary@gary：$ak:$line_no"
-        IOC_HIT=1
-      fi
-      rm -f "$KEY_TMP"
-    done < "$ak"
-  done < "$AUTHORIZED_FILES"
-fi
-
-PRIVATE_KEYS="$TMP_ROOT/private_keys"
-find /root /home -xdev -type f -path '*/.ssh/*' \
-  \( -name 'id_*' -o -name '*.pem' -o -name '*.key' \) ! -name '*.pub' -print 2>/dev/null > "$PRIVATE_KEYS" || true
-if [[ -s "$PRIVATE_KEYS" ]]; then
-  subsection "用户目录中的 SSH 私钥"
-  while read -r f; do
+if [[ -s "$RECENT_FILES" ]]; then
+  subsection "近期脚本、可执行文件、压缩包、图片和敏感配置"
+  shown=0
+  while IFS=$'\t' read -r epoch f; do
+    [[ -e "$f" ]] || continue
     stat_line "$f"
-    is_recent_file "$f" && finding SUSPICIOUS "最近出现或变更的 SSH 私钥：$f"
-  done < "$PRIVATE_KEYS"
+    have file && file -L -- "$f" 2>/dev/null || true
+    ((shown++))
+    ((shown >= MAX_ITEMS)) && break
+  done < "$RECENT_FILES"
+  total="$(wc -l < "$RECENT_FILES")"
+  ((total > MAX_ITEMS)) && echo "... 已截断，共 $total 条"
 fi
 
-SUCCESS_LOGINS="$TMP_ROOT/success_logins"
-grep -Ei 'Accepted (publickey|password|keyboard-interactive)|session opened for user' "$AUTH_LOG" > "$SUCCESS_LOGINS" || true
-subsection "成功 SSH 登录记录"
-if [[ -s "$SUCCESS_LOGINS" ]]; then
-  print_limited_file "$SUCCESS_LOGINS"
-  if grep -Eq '103\.151\.172\.96' "$SUCCESS_LOGINS"; then
-    finding CRITICAL "命中截图 IOC：发现来自 103.151.172.96 的成功登录。"
-    IOC_HIT=1
-  fi
-  if grep -Eqi 'Accepted publickey for root|Accepted password for root' "$SUCCESS_LOGINS"; then
-    finding HARDENING "检查窗口内存在 root 直接 SSH 登录，请核对来源 IP 和密钥指纹。"
-  fi
+if [[ -s "$RECENT_HIGH" ]]; then
+  RECENT_SUSP_FILES="$(wc -l < "$RECENT_HIGH")"
+  finding SUSPICIOUS "发现 $RECENT_SUSP_FILES 个位于高风险位置或名称异常的近期文件，请与远程命令时间对照。"
+  cut -f2- "$RECENT_HIGH" | sed -n "1,${MAX_ITEMS}p"
 else
-  finding INFO "未在可用日志中找到成功 SSH 登录记录，日志可能已轮转、未持久化或被清理。"
+  finding INFO "未在重点目录发现明显高风险的近期文件。"
 fi
 
-FAILED_LOGINS="$TMP_ROOT/failed_logins"
-grep -Ei 'Failed password|Invalid user|authentication failure|maximum authentication attempts' "$AUTH_LOG" > "$FAILED_LOGINS" || true
-if [[ -s "$FAILED_LOGINS" ]]; then
-  subsection "失败 SSH 登录（最后若干条）"
-  tail -n "$MAX_ITEMS" "$FAILED_LOGINS"
-fi
+# ---------------------------------------------------------------------------
+section "6. 远程命令常见后果：持久化、账号与 SSH 密钥"
 
-if have last; then
-  subsection "最近登录与重启"
-  last -Faiwx 2>/dev/null | head -n 60 || true
-fi
-
-if have sshd; then
-  SSHD_EFFECTIVE="$TMP_ROOT/sshd_effective"
-  sshd -T -C user=root,host=localhost,addr=127.0.0.1 2>/dev/null \
-    | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|authorizedkeysfile|authorizedkeyscommand|allowusers|allowgroups|authenticationmethods|permituserenvironment)' \
-    > "$SSHD_EFFECTIVE" || true
-  subsection "sshd 有效配置"
-  cat "$SSHD_EFFECTIVE"
-  grep -Eq '^permitrootlogin yes$' "$SSHD_EFFECTIVE" && finding HARDENING "sshd 允许 root 直接登录。"
-  grep -Eq '^passwordauthentication yes$' "$SSHD_EFFECTIVE" && finding HARDENING "sshd 允许密码登录。"
-  grep -Eq '^permituserenvironment yes$' "$SSHD_EFFECTIVE" && finding HARDENING "sshd 允许用户通过 environment= 注入环境变量。"
-  if grep -Eq '^authorizedkeyscommand ' "$SSHD_EFFECTIVE" && ! grep -Eq '^authorizedkeyscommand none$' "$SSHD_EFFECTIVE"; then
-    finding SUSPICIOUS "sshd 配置了外部 AuthorizedKeysCommand，请确认来源。"
-  fi
-fi
-
-section "5. 命令执行证据：auditd、进程记账与 Shell 历史"
-if have auditctl; then
-  AUDIT_STATUS="$TMP_ROOT/audit_status"
-  auditctl -s 2>/dev/null | tee "$AUDIT_STATUS" || true
-  if grep -Eq '^enabled[[:space:]]+1' "$AUDIT_STATUS"; then
-    finding INFO "auditd 当前已启用。"
-  else
-    finding HARDENING "auditd 未启用或不可用，历史命令与文件写入可能无法精确追溯。"
-  fi
-else
-  finding HARDENING "未安装 auditd 工具，无法依赖内核审计还原历史命令。"
-fi
-
-if [[ -r /var/log/audit/audit.log ]]; then
-  AUDIT_SUS="$TMP_ROOT/audit_suspicious"
-  zgrep -hEi 'nezha-agent|/opt/nezha/agent|authorized_keys|/etc/passwd|/etc/shadow|/etc/sudoers|/etc/systemd/system|image-search|xmrig|dpkgd' \
-    /var/log/audit/audit.log* 2>/dev/null > "$AUDIT_SUS" || true
-  if [[ -s "$AUDIT_SUS" ]]; then
-    finding SUSPICIOUS "审计日志命中 Agent、账号、SSH 密钥、持久化或挖矿关键词。"
-    print_limited_file "$AUDIT_SUS"
-  else
-    finding INFO "审计日志未匹配到本脚本关键词；可能未配置相应审计规则。"
-  fi
-fi
-
-if have lastcomm; then
-  LASTCOMM_SUS="$TMP_ROOT/lastcomm_suspicious"
-  lastcomm 2>/dev/null | grep -Ei 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|dpkgd|useradd|usermod|chattr|curl|wget|tmux|screen' > "$LASTCOMM_SUS" || true
-  if [[ -s "$LASTCOMM_SUS" ]]; then
-    finding SUSPICIOUS "进程记账记录中发现敏感命令。"
-    print_limited_file "$LASTCOMM_SUS"
-  else
-    finding INFO "进程记账无匹配记录，或系统未启用 acct/psacct。"
-  fi
-else
-  finding INFO "未安装 lastcomm，无法使用进程记账。"
-fi
-
-HISTORY_FILES="$TMP_ROOT/history_files"
-find /root /home -xdev -type f \( -name '.bash_history' -o -name '.zsh_history' -o -name '.ash_history' -o -name '.history' \) -print 2>/dev/null > "$HISTORY_FILES" || true
-HISTORY_SUS="$TMP_ROOT/history_suspicious"
-: > "$HISTORY_SUS"
-while read -r hf; do
-  [[ -r "$hf" ]] || continue
-  grep -Ein 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|dpkgd|image-search|useradd|adduser|usermod|authorized_keys|ssh-(rsa|ed25519)|chattr[[:space:]]+\+i|/dev/shm|curl.+\|.*sh|wget.+\|.*sh|base64[[:space:]]+-d|systemctl[[:space:]]+(enable|start)|tmux|screen|nohup|stratum' "$hf" 2>/dev/null \
-    | sed "s#^#$hf:#" >> "$HISTORY_SUS" || true
-done < "$HISTORY_FILES"
-if [[ -s "$HISTORY_SUS" ]]; then
-  finding SUSPICIOUS "Shell 历史记录中出现敏感操作。"
-  print_limited_file "$HISTORY_SUS"
-else
-  finding INFO "Shell 历史未命中关键词；Agent 非交互命令通常不会写入用户 Shell 历史。"
-fi
-
-section "6. systemd、Cron、启动项与持久化"
-SYSTEMD_RECENT="$TMP_ROOT/systemd_recent"
-find /etc/systemd/system /usr/local/lib/systemd/system -xdev -type f \
-  \( -name '*.service' -o -name '*.timer' -o -name '*.socket' \) -newermt "$START_DATE" -print 2>/dev/null > "$SYSTEMD_RECENT" || true
-if [[ -s "$SYSTEMD_RECENT" ]]; then
-  finding HARDENING "最近 $DAYS 天内新增或修改了本地 systemd 单元，请核对变更来源。"
-  while read -r f; do
-    stat_line "$f"
-    grep -E '^[[:space:]]*(ExecStart|ExecStartPre|ExecStartPost|Environment|User)=' "$f" 2>/dev/null || true
-  done < "$SYSTEMD_RECENT"
-fi
-
-SYSTEMD_SUS="$TMP_ROOT/systemd_suspicious"
-: > "$SYSTEMD_SUS"
-for f in /etc/systemd/system/*.service /etc/systemd/system/*/*.service /usr/local/lib/systemd/system/*.service \
-         /lib/systemd/system/*.service /usr/lib/systemd/system/*.service; do
-  [[ -r "$f" && -f "$f" ]] || continue
-  if grep -Eqi 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|dpkgd|image-search|/dev/shm|/var/tmp|/tmp/\.|stratum|curl.+\|.*sh|wget.+\|.*sh' "$f"; then
-    echo "### $f" >> "$SYSTEMD_SUS"
-    grep -Ev '^[[:space:]]*($|#)' "$f" >> "$SYSTEMD_SUS"
-  fi
-done
-if [[ -s "$SYSTEMD_SUS" ]]; then
-  finding CRITICAL "systemd 单元中发现挖矿、后门、临时目录或下载执行特征。"
-  print_limited_file "$SYSTEMD_SUS"
-fi
-
-CRON_ALL="$TMP_ROOT/cron_all"
-: > "$CRON_ALL"
-for f in /etc/crontab /etc/anacrontab /etc/cron.d/* /var/spool/cron/* /var/spool/cron/crontabs/*; do
-  [[ -r "$f" && -f "$f" ]] || continue
-  echo "### $f" >> "$CRON_ALL"
-  grep -Ev '^[[:space:]]*($|#)' "$f" >> "$CRON_ALL" || true
-  is_recent_file "$f" && finding HARDENING "Cron 文件在最近 $DAYS 天内有变更，请核对：$f"
-done
-subsection "有效 Cron 项"
-print_limited_file "$CRON_ALL" || echo "未发现有效 Cron 项。"
-if grep -Eqi 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|dpkgd|image-search|/dev/shm|/var/tmp|/tmp/\.|curl.+\|.*sh|wget.+\|.*sh|base64[[:space:]]+-d' "$CRON_ALL"; then
-  finding CRITICAL "Cron 中发现挖矿、后门或下载执行特征。"
-fi
-
-for f in /etc/rc.local /etc/ld.so.preload /etc/profile /etc/bash.bashrc /root/.bashrc /root/.profile; do
-  [[ -e "$f" ]] || continue
-  stat_line "$f"
-  if [[ "$f" == "/etc/ld.so.preload" && -s "$f" ]]; then
-    finding CRITICAL "/etc/ld.so.preload 非空，可能用于用户态 rootkit 注入。"
-    cat "$f" 2>/dev/null || true
-  elif grep -Eqi 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|dpkgd|image-search|/dev/shm|/var/tmp|/tmp/\.|curl.+\|.*sh|wget.+\|.*sh|base64[[:space:]]+-d' "$f" 2>/dev/null; then
-    finding CRITICAL "启动/环境文件中发现挖矿、后门或下载执行特征：$f"
-    grep -Ein 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|dpkgd|image-search|/dev/shm|/var/tmp|/tmp/\.|curl.+\|.*sh|wget.+\|.*sh|base64[[:space:]]+-d' "$f" 2>/dev/null | head -n "$MAX_ITEMS" || true
-  elif is_recent_file "$f"; then
-    finding HARDENING "启动/环境文件在最近 $DAYS 天内有变更，请核对：$f"
-  fi
-done
-
-PROFILE_RECENT="$TMP_ROOT/profile_recent"
-find /etc/profile.d -xdev -type f -newermt "$START_DATE" -print 2>/dev/null > "$PROFILE_RECENT" || true
-if [[ -s "$PROFILE_RECENT" ]]; then
-  finding HARDENING "最近修改了 /etc/profile.d 下的登录启动脚本，请核对。"
-  print_limited_file "$PROFILE_RECENT"
-  while read -r f; do
-    if grep -Eqi 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|dpkgd|image-search|/dev/shm|/var/tmp|/tmp/\.|curl.+\|.*sh|wget.+\|.*sh|base64[[:space:]]+-d' "$f" 2>/dev/null; then
-      finding CRITICAL "profile.d 启动脚本中发现挖矿、后门或下载执行特征：$f"
-      grep -Ein 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|dpkgd|image-search|/dev/shm|/var/tmp|/tmp/\.|curl.+\|.*sh|wget.+\|.*sh|base64[[:space:]]+-d' "$f" 2>/dev/null | head -n "$MAX_ITEMS" || true
-    fi
-  done < "$PROFILE_RECENT"
-fi
-
-section "7. 最近文件、疑似上传文件与系统命令完整性"
-RECENT_UPLOADS="$TMP_ROOT/recent_uploads"
-find /opt/nezha /tmp /var/tmp /dev/shm /root /home \
-  -xdev -type f -newermt "$START_DATE" \
-  \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' -o -iname '*.gif' \
-     -o -iname '*.zip' -o -iname '*.7z' -o -iname '*.rar' -o -iname '*.tar' -o -iname '*.tgz' \
-     -o -iname '*.sh' -o -iname '*.py' -o -iname '*.pl' -o -iname '*.so' -o -iname '*.bin' \
-     -o -iname '*.elf' -o -iname '*.service' \) -print 2>/dev/null > "$RECENT_UPLOADS" || true
-if [[ -s "$RECENT_UPLOADS" ]]; then
-  finding SUSPICIOUS "发现最近出现的图片、压缩包、脚本、共享库或服务文件；其中可能包含面板上传文件或截图。"
-  while read -r f; do
-    stat_line "$f"
-    describe_file "$f"
-    [[ -x "$f" ]] && hash_file "$f"
-  done < <(sed -n "1,${MAX_ITEMS}p" "$RECENT_UPLOADS")
-else
-  finding INFO "未在常见目录发现最近的图片、压缩包、脚本或二进制上传痕迹。"
-fi
-
-TEMP_EXEC="$TMP_ROOT/temp_exec"
-find /tmp /var/tmp /dev/shm -xdev -type f -newermt "$START_DATE" \( -perm /111 -o -name '.*' \) -print 2>/dev/null > "$TEMP_EXEC" || true
-if [[ -s "$TEMP_EXEC" ]]; then
-  finding SUSPICIOUS "临时目录中存在最近的可执行或隐藏文件。"
-  while read -r f; do stat_line "$f"; describe_file "$f"; hash_file "$f"; done \
-    < <(sed -n "1,${MAX_ITEMS}p" "$TEMP_EXEC")
-fi
-
-RECENT_LOCAL_EXEC="$TMP_ROOT/recent_local_exec"
-find /opt/nezha /usr/local/bin /usr/local/sbin -xdev -type f -perm /111   -newermt "$START_DATE" -print 2>/dev/null > "$RECENT_LOCAL_EXEC" || true
-if [[ -s "$RECENT_LOCAL_EXEC" ]]; then
-  finding SUSPICIOUS "哪吒目录或 /usr/local 命令目录中存在最近新增/修改的可执行文件。"
-  while read -r f; do stat_line "$f"; describe_file "$f"; hash_file "$f"; done     < <(sed -n "1,${MAX_ITEMS}p" "$RECENT_LOCAL_EXEC")
-fi
-
-RECENT_SYSTEM_UNOWNED="$TMP_ROOT/recent_system_unowned"
-: > "$RECENT_SYSTEM_UNOWNED"
-while read -r f; do
+PERSIST="$TMP/persistence"
+: > "$PERSIST"
+find /etc/systemd/system /usr/local/lib/systemd/system -xdev -type f -newermt "@$START_EPOCH" -print 2>/dev/null >> "$PERSIST" || true
+for f in /etc/crontab /etc/anacrontab /etc/cron.d/* /var/spool/cron/* /var/spool/cron/crontabs/* /etc/rc.local; do
   [[ -f "$f" ]] || continue
-  owner="$(package_owner "$f")"
-  if [[ -z "$owner" ]]; then
-    echo "$f" >> "$RECENT_SYSTEM_UNOWNED"
-  fi
-done < <(find /usr/bin /usr/sbin /bin /sbin -xdev -type f -newermt "$START_DATE" -print 2>/dev/null | head -n "$((MAX_ITEMS * 5))")
-if [[ -s "$RECENT_SYSTEM_UNOWNED" ]]; then
-  finding SUSPICIOUS "系统命令目录中存在最近修改且不属于已安装软件包的文件。"
-  while read -r f; do stat_line "$f"; describe_file "$f"; hash_file "$f"; done \
-    < <(sed -n "1,${MAX_ITEMS}p" "$RECENT_SYSTEM_UNOWNED")
-fi
-
-subsection "关键命令文件类型、软件包归属和校验"
-KEY_COMMANDS=(ps ss netstat lsof top ls find systemctl ssh sshd sudo dpkg rpm)
-for c in "${KEY_COMMANDS[@]}"; do
-  path="$(command -v "$c" 2>/dev/null || true)"
-  [[ -n "$path" && -e "$path" ]] || continue
-  real="$(readlink -f "$path" 2>/dev/null || echo "$path")"
-  owner="$(package_owner "$real")"
-  printf '%-10s path=%s real=%s package=%s\n' "$c" "$path" "$real" "${owner:-UNOWNED}"
-  describe_file "$real"
-  if [[ -z "$owner" && "$real" != /usr/local/* ]]; then
-    finding SUSPICIOUS "关键命令不属于已安装软件包：$c -> $real"
-  fi
-  if have dpkg-query && [[ -n "$owner" ]]; then
-    VERIFY_OUT="$(dpkg -V "$owner" 2>/dev/null | grep -F " $real" || true)"
-    [[ -n "$VERIFY_OUT" ]] && { finding CRITICAL "Debian 软件包校验发现关键命令被修改：$real"; echo "$VERIFY_OUT"; }
-  elif have rpm && [[ -n "$owner" ]]; then
-    VERIFY_OUT="$(rpm -Vf "$real" 2>/dev/null | grep -F " $real" || true)"
-    [[ -n "$VERIFY_OUT" ]] && { finding CRITICAL "RPM 校验发现关键命令被修改：$real"; echo "$VERIFY_OUT"; }
-  fi
+  find "$f" -maxdepth 0 -newermt "@$START_EPOCH" -print 2>/dev/null >> "$PERSIST" || true
 done
+sort -u -o "$PERSIST" "$PERSIST"
 
-SUID_RECENT="$TMP_ROOT/suid_recent"
-find /usr/local /opt /tmp /var/tmp /dev/shm /root /home -xdev -type f \
-  \( -perm -4000 -o -perm -2000 \) -perm /111 -uid 0 -newermt "$START_DATE" -print 2>/dev/null > "$SUID_RECENT" || true
-if [[ -s "$SUID_RECENT" ]]; then
-  finding SUSPICIOUS "最近出现或修改了 SUID/SGID 文件。"
-  while read -r f; do stat_line "$f"; describe_file "$f"; hash_file "$f"; done < "$SUID_RECENT"
-fi
-
-section "8. 网络监听、已建立连接与日志清理迹象"
-if have ss; then
-  subsection "监听端口"
-  ss -Hlnptu 2>/dev/null | sed -n "1,${MAX_ITEMS}p" || true
-  subsection "已建立 TCP 连接"
-  ss -Hntp state established 2>/dev/null | sed -n "1,${MAX_ITEMS}p" || true
-fi
-
-for f in /var/log/auth.log /var/log/secure /var/log/audit/audit.log /var/log/wtmp /var/log/btmp /var/log/lastlog; do
-  [[ -e "$f" ]] || continue
-  stat_line "$f"
-  if [[ ! -s "$f" && "$f" != /var/log/lastlog ]]; then
-    if is_recent_file "$f"; then
-      finding SUSPICIOUS "关键安全日志近期变为空或被截断：$f"
-    else
-      finding INFO "关键安全日志为空：$f（在容器、最小化系统或未启用对应日志时可能正常）"
-    fi
-  fi
-done
-
-if have journalctl; then
-  JOURNAL_RANGE="$TMP_ROOT/journal_range"
-  journalctl --list-boots --no-pager 2>/dev/null | tee "$JOURNAL_RANGE" || true
-  if [[ ! -s "$JOURNAL_RANGE" ]]; then
-    finding HARDENING "journald 没有可查询的启动历史，可能未持久化。"
-  fi
-fi
-
-section "检测结论"
-printf '严重=%d  可疑=%d  配置风险=%d  信息=%d  检测失败=%d\n' \
-  "$CRITICAL" "$SUSPICIOUS" "$HARDENING" "$INFO_COUNT" "$ERRORS"
-
-if ((CRITICAL == 0 && SUSPICIOUS == 0)); then
-  printf '\n%s%s机器安全：未发现明显入侵迹象。%s\n' "$C_GREEN" "$C_BOLD" "$C_RESET"
-  echo "说明：该结论仅基于当前仍可见的日志、进程、文件和账号状态，不等同于取证意义上的绝对安全。"
-  if ((HARDENING > 0)); then
-    echo "另有 $HARDENING 项配置风险，建议完成加固后复查。"
-  fi
-  exit 0
+if [[ -s "$PERSIST" ]]; then
+  PERSIST_COUNT="$(wc -l < "$PERSIST")"
+  finding SUSPICIOUS "最近 $DAYS 天有 $PERSIST_COUNT 个 systemd/Cron/启动文件发生变更。"
+  while IFS= read -r f; do
+    stat_line "$f"
+    grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null | sed -n '1,80p' || true
+    echo "---"
+  done < <(sed -n "1,${MAX_ITEMS}p" "$PERSIST")
 else
-  printf '\n%s%s发现疑似入侵或高风险痕迹，请立即隔离主机并保全证据。%s\n' "$C_RED" "$C_BOLD" "$C_RESET"
-  echo "优先动作：不要先删除文件；先保存磁盘/内存快照、journald、audit、auth 日志和面板任务记录，再轮换面板密钥及所有 SSH 密钥。"
+  finding INFO "重点持久化位置未发现检查窗口内的文件变更。"
+fi
+
+PERSIST_SUS="$TMP/persistence_suspicious"
+: > "$PERSIST_SUS"
+while IFS= read -r f; do
+  [[ -r "$f" ]] || continue
+  grep -Ein 'xmrig|miner|kdevtmpfsi|kinsing|dpkgd|/dev/shm|/var/tmp|/tmp/\.|curl.+\|.*sh|wget.+\|.*sh|base64.+(-d|--decode)|nohup|setsid|socat|chisel|frpc|gost|realm' "$f" 2>/dev/null \
+    | sed "s|^|$f:|" >> "$PERSIST_SUS" || true
+done < "$PERSIST"
+if [[ -s "$PERSIST_SUS" ]]; then
+  finding HIGH "持久化配置命中下载执行、挖矿、代理或临时目录特征。"
+  print_limited "$PERSIST_SUS"
+fi
+
+subsection "账号"
+UID_MIN="$(awk '$1=="UID_MIN"{print $2; exit}' /etc/login.defs 2>/dev/null || echo 1000)"
+[[ "$UID_MIN" =~ ^[0-9]+$ ]] || UID_MIN=1000
+while IFS=: read -r name _ uid gid gecos home shell; do
+  [[ "$uid" =~ ^[0-9]+$ ]] || continue
+  if ((uid == 0)) && [[ "$name" != root ]]; then
+    ((ACCOUNT_COUNT++))
+    finding HIGH "发现额外 UID 0 账号：$name home=$home shell=$shell"
+  elif ((uid >= UID_MIN)) && [[ "$shell" != */nologin && "$shell" != */false ]]; then
+    echo "可登录账号：user=$name uid=$uid gid=$gid home=$home shell=$shell"
+  fi
+done < /etc/passwd
+
+for f in /etc/passwd /etc/shadow /etc/group /etc/gshadow /etc/sudoers; do
+  [[ -e "$f" ]] || continue
+  if find "$f" -maxdepth 0 -newermt "@$START_EPOCH" -print -quit 2>/dev/null | grep -q .; then
+    finding RISK "$f 在检查窗口内发生过变更。"
+    stat_line "$f"
+  fi
+done
+while IFS= read -r f; do
+  finding RISK "sudo 配置近期变更：$f"
+  stat_line "$f"
+  grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null || true
+done < <(find /etc/sudoers.d -maxdepth 1 -type f -newermt "@$START_EPOCH" -print 2>/dev/null)
+
+subsection "SSH authorized_keys"
+AUTH_KEYS="$TMP/authorized_keys"
+find /root /home -xdev -type f \( -name authorized_keys -o -name authorized_keys2 \) -print 2>/dev/null | sort -u > "$AUTH_KEYS" || true
+if [[ -s "$AUTH_KEYS" ]]; then
+  while IFS= read -r f; do
+    stat_line "$f"
+    nonempty="$(grep -Ev '^[[:space:]]*(#|$)' "$f" 2>/dev/null | wc -l || echo 0)"
+    if [[ "$nonempty" =~ ^[0-9]+$ ]] && ((nonempty > 0)); then
+      KEY_COUNT=$((KEY_COUNT + nonempty))
+      finding SUSPICIOUS "$f 含 $nonempty 条有效公钥，请逐条确认。"
+      if have ssh-keygen; then
+        ssh-keygen -lf "$f" 2>/dev/null || true
+      else
+        grep -En '^[[:space:]]*(from=|command=|environment=|no-|restrict|ssh-|ecdsa-)' "$f" 2>/dev/null || true
+      fi
+    fi
+    if find "$f" -maxdepth 0 -newermt "@$START_EPOCH" -print -quit 2>/dev/null | grep -q .; then
+      finding RISK "SSH 公钥文件在检查窗口内发生过变更：$f"
+    fi
+  done < "$AUTH_KEYS"
+else
+  finding INFO "未发现 authorized_keys 文件。"
+fi
+
+subsection "SSH 成功登录来源"
+AUTH_LOG="$TMP/auth.log"
+: > "$AUTH_LOG"
+if have journalctl; then
+  journalctl --since "@$START_EPOCH" --no-pager -o short-iso -u ssh.service -u sshd.service 2>/dev/null >> "$AUTH_LOG" || true
+fi
+for f in /var/log/auth.log /var/log/auth.log.1 /var/log/secure /var/log/secure-*; do
+  [[ -r "$f" ]] && cat "$f" >> "$AUTH_LOG" 2>/dev/null || true
+done
+SSH_SUCCESS="$TMP/ssh_success"
+grep -Ei 'Accepted (password|publickey|keyboard-interactive).* for ' "$AUTH_LOG" 2>/dev/null | awk '!seen[$0]++' > "$SSH_SUCCESS" || true
+if [[ -s "$SSH_SUCCESS" ]]; then
+  print_limited "$SSH_SUCCESS"
+  if grep -Eqi 'Accepted (password|publickey|keyboard-interactive).* for root ' "$SSH_SUCCESS"; then
+    finding HIGH "检查窗口内存在 root SSH 成功登录；请核对全部来源 IP。"
+  fi
+else
+  finding INFO "可用认证日志中未找到检查窗口内的 SSH 成功登录。"
+fi
+
+# ---------------------------------------------------------------------------
+section "7. 当前进程、监听端口与恶意特征"
+
+PROC_SUS="$TMP/proc_suspicious"
+ps -eo pid=,ppid=,user=,lstart=,%cpu=,%mem=,args= --sort=-%cpu 2>/dev/null \
+  | grep -Ei 'xmrig|minerd|cpuminer|kdevtmpfsi|kinsing|watchbog|dpkgd|stratum|/dev/shm|/var/tmp/\.|/tmp/\.|socat|chisel|frpc|gost|realm' \
+  | grep -vE 'grep -E|nezha_agent_rce_forensics' > "$PROC_SUS" || true
+if [[ -s "$PROC_SUS" ]]; then
+  finding SUSPICIOUS "当前进程命中挖矿、代理、隧道或临时目录执行特征。"
+  print_limited "$PROC_SUS"
+else
+  finding INFO "当前进程未命中内置恶意特征。"
+fi
+
+if have ss; then
+  NET_SUS="$TMP/net_suspicious"
+  ss -Hantup 2>/dev/null | grep -Ei ':(3333|4444|5555|7777|8888|9999|14444|14433)([[:space:]]|$)|xmrig|minerd|kdevtmpfsi|kinsing' > "$NET_SUS" || true
+  if [[ -s "$NET_SUS" ]]; then
+    finding SUSPICIOUS "发现常见矿池端口或相关进程网络连接；端口匹配可能存在误报。"
+    print_limited "$NET_SUS"
+  fi
+  subsection "当前监听端口（前 $MAX_ITEMS 条）"
+  ss -Hlntup 2>/dev/null | sed -n "1,${MAX_ITEMS}p" || true
+fi
+
+# ---------------------------------------------------------------------------
+section "8. 结论"
+
+printf '已确认命令=%s  高危=%s  可疑=%s  风险=%s  取证缺口=%s  检测失败=%s\n' \
+  "$CONFIRMED" "$HIGH" "$SUSPICIOUS" "$RISK" "$VISIBILITY_GAPS" "$ERRORS"
+printf 'audit直接命令=%s  audit子进程=%s  audit文件记录=%s  当前Agent子进程=%s  MCP临时文件=%s\n' \
+  "$AUDIT_DIRECT" "$AUDIT_CHILD" "$AUDIT_FILEOPS" "$LIVE_CHILDREN" "$MCP_TEMP_COUNT"
+
+if ((CONFIRMED > 0)); then
+  printf '%s%s结论：已确认 nezha-agent 派生执行过命令。请按上方“命令=”逐条处置，并结合时间检查文件、账号、SSH 和持久化。%s\n' "$B" "$RED" "$C0"
+elif ((HIGH > 0 || SUSPICIOUS > 0)); then
+  printf '%s%s结论：发现高风险或可疑痕迹，不能判定机器安全。%s\n' "$B" "$RED" "$C0"
+elif ((VISIBILITY_GAPS > 0)); then
+  printf '%s%s结论：未发现明确入侵痕迹，但历史审计不足，无法证明未通过 Nezha 执行过命令。%s\n' "$B" "$YEL" "$C0"
+else
+  printf '%s%s机器安全：检查窗口内未发现 nezha-agent 远程命令、上传或持久化痕迹。%s\n' "$B" "$GRN" "$C0"
+fi
+
+if ((REMOTE_ENABLED > 0)); then
+  echo "建议：确认业务允许后，在 Agent 配置中启用 disable_command_execute: true 或 --disable-command-execute，并轮换面板/Agent 密钥。"
+fi
+if ((AUDIT_EXEC_COVERAGE == 0)); then
+  echo "建议：在处置完成后启用 auditd 的 execve/execveat 审计，以便未来精确还原命令。"
+fi
+[[ -n "$OUTPUT_FILE" ]] && echo "完整结果已保存：$OUTPUT_FILE"
+
+echo "说明：只读检测无法补回已经被清理或从未记录的历史证据；获得过 root 权限的主机最终仍应从可信镜像重建。"
+
+if ((ERRORS > 0)); then
+  exit 2
+elif ((CONFIRMED > 0 || HIGH > 0 || SUSPICIOUS > 0)); then
   exit 1
+else
+  exit 0
 fi
